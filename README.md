@@ -1,10 +1,12 @@
 # globe
 
-FIXME: my new library.
+A poor man's actor library for Clojure and ClojureScript.
 
 ## Usage
 
-FIXME: write usage documentation!
+Run a REPL and connect to it in Emacs (`M-x cider-connect-clj` or `C-c M-c`):
+
+    $ clojure -M:env/test:env/dev:repl
 
 Invoke a library API function from the command-line:
 
@@ -29,7 +31,7 @@ Deploy it to Clojars -- needs `CLOJARS_USERNAME` and `CLOJARS_PASSWORD` environm
 
 ## License
 
-Copyright © 2021 Eploko
+Copyright © 2021 Andrey Subbotin
 
 Distributed under the Eclipse Public License either version 1.0 or (at
 your option) any later version.
