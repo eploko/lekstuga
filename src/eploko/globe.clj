@@ -3,12 +3,52 @@
   (:require
    [clojure.string :as str]))
 
+(def hop-separator
+  "The string to separate hops in an address."
+  "/")
+
+(def hop-separator-re
+  "The regex pattern matching hop separator."
+  (re-pattern hop-separator))
+
 (defn- devar
   "Derefs the var if given, return the value otherwise."
   [var-or-val]
   (or (and (var? var-or-val)
            (deref var-or-val))
       var-or-val))
+
+(defn split-into-hops
+  "Splits a hops string into parts."
+  [s]
+  (str/split s hop-separator-re))
+
+(defn join-hops
+  "Joins hops back into a string."
+  [hops]
+  (str/join hop-separator hops))
+
+(defn get-addr-hops
+  "Returns a seq of components of an address."
+  [addr]
+  (split-into-hops addr))
+
+(defn first-hop
+  "Returns the first hop among hops."
+  [hops]
+  (first hops))
+
+(defn rest-hops
+  "Returns but first hops among hops."
+  [hops]
+  (rest hops))
+
+(defn addr-parts
+  "Splits an addr into a tuple of head and rest."
+  [addr]
+  (let [hops (get-addr-hops addr)]
+    [(first-hop hops)
+     (join-hops (rest-hops hops))]))
 
 (defn make-msg
   "Creates a new message of the given type with the given payload."
@@ -115,13 +155,6 @@
      (swap! system update :children
             register-actor actor-name user-actor)
      actor-name)))
-
-(defn addr-parts
-  "Splits an addr into a tuple of head and rest."
-  [addr]
-  (let [parts (str/split addr #"/" 2)]
-    [(first parts)
-     (str/join "/" (rest parts))]))
 
 (defn deliver-msg
   "Delivers a message to the actor's mailbox and returns the actor."
