@@ -55,17 +55,18 @@
   ([msg-type]
    (make-msg msg-type nil))
   ([msg-type payload]
-   [msg-type payload]))
+   {:type msg-type
+    :payload payload}))
 
 (defn get-msg-type
   "Returns the message's type."
   [msg]
-  (first msg))
+  (:type msg))
 
 (defn get-msg-payload
   "Returns the message's payload."
   [msg]
-  (second msg))
+  (:payload msg))
 
 (defn make-actor
   "Specifies a new actor."
@@ -118,6 +119,10 @@
   [role name]
   (make-actor role name))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; System NS Role
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 (defn- system-start-h
   [state _payload]
   (println "Starting the system!")
@@ -126,13 +131,23 @@
 (def ^:private system-role
   {::start #'system-start-h})
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; User NS Role
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defn- user-start-h
+  [state _payload]
+  (println "Starting the user ns!")
+  state)
+
+(def ^:private user-role
+  {::start #'user-start-h})
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 (defn make-system
   [name]
   (make-actor #'system-role name))
-
-(defn register-actor
-  [registry name actor]
-  (assoc registry name actor))
 
 (defonce ^:private system (atom nil))
 
@@ -152,8 +167,7 @@
    (let [actor-name (get-actor-name user-actor)]
      (reset! system (make-system root-path))
      (swap! system call (make-msg ::start))
-     (swap! system update :children
-            register-actor actor-name user-actor)
+     (swap! system add-actor-child actor-name user-actor)
      actor-name)))
 
 (defn deliver-msg
