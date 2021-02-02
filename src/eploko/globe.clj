@@ -3,6 +3,10 @@
   (:require
    [clojure.string :as str]))
 
+(def no-hop
+  "The empty hop denoting the target."
+  "")
+
 (def hop-separator
   "The string to separate hops in an address."
   "/")
@@ -18,7 +22,7 @@
            (deref var-or-val))
       var-or-val))
 
-(defn split-into-hops
+(defn split-hops
   "Splits a hops string into parts."
   [s]
   (str/split s hop-separator-re))
@@ -28,27 +32,15 @@
   [hops]
   (str/join hop-separator hops))
 
-(defn get-addr-hops
-  "Returns a seq of components of an address."
-  [addr]
-  (split-into-hops addr))
-
 (defn first-hop
-  "Returns the first hop among hops."
-  [hops]
-  (first hops))
+  "Returns the first hop for the address."
+  [addr]
+  (first (split-hops addr)))
 
 (defn rest-hops
-  "Returns but first hops among hops."
-  [hops]
-  (rest hops))
-
-(defn addr-parts
-  "Splits an addr into a tuple of head and rest."
+  "Returns but first hops for the addr."
   [addr]
-  (let [hops (get-addr-hops addr)]
-    [(first-hop hops)
-     (join-hops (rest-hops hops))]))
+  (join-hops (rest (split-hops addr))))
 
 (defn make-msg
   "Creates a new message of the given type with the given payload."
@@ -162,7 +154,7 @@
 
 (defn start-system
   ([user-actor]
-   (start-system "" user-actor))
+   (start-system no-hop user-actor))
   ([root-path user-actor]
    (let [actor-name (get-actor-name user-actor)]
      (reset! system (make-system root-path))
@@ -170,13 +162,30 @@
      (swap! system add-actor-child actor-name user-actor)
      actor-name)))
 
+(defn nested-actor-child-path
+  "Returns the path to the nested actor child given its address."
+  [addr]
+  (interleave (repeatedly (constantly :children))
+              (split-hops addr)))
+
+(defn get-actor-child
+  "Returns a deeply nested child."
+  [actor addr]
+  (get-in actor (nested-actor-child-path addr)))
+
+(defn actor-has-child?
+  "Checks if the actor has a child at address."
+  [actor addr]
+  (not (nil? (get-actor-child actor addr))))
+
 (defn deliver-msg
   "Delivers a message to the actor's mailbox and returns the actor."
-  [actor addr msg]
-  (if (= "" addr)
-    (add-to-actor-mailbox actor msg)
-    (let [[head tail] (addr-parts addr)]
-      (update-in actor [:children head] deliver-msg tail msg))))
+  ([actor addr msg]
+   (if (= no-hop addr)
+     (add-to-actor-mailbox actor msg)
+     (if (actor-has-child? actor addr)
+       (update-in actor (nested-actor-child-path addr) add-to-actor-mailbox msg)
+       (throw (ex-info "Unknown address! Message dropped." {:addr addr :msg msg}))))))
 
 (defn tell
   "Sends a message to the actor."
