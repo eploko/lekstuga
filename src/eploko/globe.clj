@@ -1,274 +1,286 @@
-(ns eploko.globe
-  "A poor man's actor library."
+(ns eploko.globe2
   (:require
+   [clojure.core.async :as async :refer [<! go]]
    [clojure.string :as str]))
 
-(def no-hop
-  "The empty hop denoting the target."
-  "")
-
-(def hop-separator
-  "The string to separate hops in an address."
-  "/")
-
-(def hop-separator-re
-  "The regex pattern matching hop separator."
-  (re-pattern hop-separator))
-
-(defn- devar
+(defn devar
   "Derefs the var if given, return the value otherwise."
   [var-or-val]
   (or (and (var? var-or-val)
            (deref var-or-val))
       var-or-val))
 
-(defn split-hops
-  "Splits a hops string into parts."
-  [s]
-  (str/split s hop-separator-re))
-
-(defn join-hops
-  "Joins hops back into a string."
-  [hops]
-  (str/join hop-separator hops))
-
-(defn first-hop
-  "Returns the first hop for the address."
-  [addr]
-  (first (split-hops addr)))
-
-(defn rest-hops
-  "Returns but first hops for the addr."
-  [addr]
-  (join-hops (rest (split-hops addr))))
+(declare ^:dynamic *current-actor*)
+(declare ^:dynamic *current-role*)
+(defonce system (atom nil))
 
 (defn make-msg
-  "Creates a new message of the given type with the given payload."
-  ([msg-type]
-   (make-msg msg-type nil))
-  ([msg-type payload]
-   {:type msg-type
+  ([kind]
+   (make-msg kind nil))
+  ([kind payload]
+   {:kind kind
     :payload payload}))
 
-(defn get-msg-type
-  "Returns the message's type."
+(defn get-msg-kind
   [msg]
-  (:type msg))
+  (:kind msg))
 
 (defn get-msg-payload
-  "Returns the message's payload."
   [msg]
   (:payload msg))
 
+(defn default-h
+  [state msg]
+  (println (str "No handler. Message dropped: " msg))
+  state)
+
 (defn make-role
-  "Returns a new role given a base role and a set of callback handlers
-  and a set of message handlers."
   ([handlers]
-   (make-role handlers nil))
-  ([handlers callbacks]
-   (make-role nil handlers callbacks))
-  ([base handlers callbacks]
+   (make-role nil handlers))
+  ([base handlers]
    {:base base
-    :callbacks callbacks
     :handlers handlers}))
 
 (defn get-role-base
-  "Returns the base role for the role."
   [role]
-  (:base role))
+  (devar (:base role)))
 
-(defn get-role-callbacks
-  "Returns the role's callbacks."
-  [role]
-  (:callbacks role))
-
-(defn get-role-handlers
-  "Returns the role's handlers."
+(defn get-role-immediate-handlers
   [role]
   (:handlers role))
 
-(defn get-role-handler
-  "Returns the role's handler for the name."
-  [role handler-name]
-  (get (get-role-handlers role) handler-name))
+(defn get-role-immediate-handler
+  [role kind]
+  (-> (get-role-immediate-handlers role)
+      (get kind)))
 
-(defn get-role-callback
-  "Returns the role's callback for the name."
-  [role callback-name]
-  (get (get-role-callbacks role) callback-name))
+(defn get-role-handler
+  ([role kind]
+   (get-role-handler role role kind))
+  ([original-role current-role kind]
+   (when current-role
+     (if-let [h (get-role-immediate-handler current-role kind)]
+       h
+       (recur original-role (get-role-base current-role) kind)))))
+
+(defn find-suitable-handler
+  [role kind]
+  (or (get-role-handler role kind)
+      (get-role-handler role ::handler-not-found)
+      default-h))
 
 (defn make-actor
-  "Specifies a new actor."
-  ([role name]
-   (make-actor role name nil))
-  ([role name props]
+  ([role actor-name]
+   (make-actor role actor-name nil))
+  ([role actor-name props]
    {:role role
-    :name name
+    :name actor-name
     :props props
     :state (atom nil)
     :mailbox (atom [])
+    :new-mail-ch (async/chan)
     :children (atom {})}))
 
 (defn get-actor-role
-  "Returns the actor's role."
   [actor]
   (devar (:role actor)))
 
-(defn get-actor-name
-  "Returns the actor's name."
-  [actor]
-  (:name actor))
-
 (defn get-actor-state
-  "Returns the actor's state."
   [actor]
   (:state actor))
 
 (defn get-actor-props
-  "Returns the actor's props."
   [actor]
   (:props actor))
 
-(defn get-actor-mailbox
-  "Returns the actor's mailbox."
-  [actor]
-  (:mailbox actor))
-
 (defn get-actor-children
-  "Returns the actor's children."
   [actor]
   (:children actor))
 
 (defn get-actor-child
-  "Returns a deeply nested child."
-  [actor addr]
-  (if (or (nil? actor)
-          (= addr no-hop))
-    actor
-    (when-let [child (get (deref (get-actor-children actor)) (first-hop addr))]
-      (recur child (rest-hops addr)))))
+  [actor child-name]
+  (get (deref (get-actor-children actor)) child-name))
 
-(defn actor-has-child?
-  "Checks if the actor has a child at address."
-  [actor addr]
-  (not (nil? (get-actor-child actor addr))))
+(defn get-actor-mailbox
+  [actor]
+  (:mailbox actor))
 
-(defn add-to-actor-mailbox
-  "Adds the message to the actor's mailbox."
+(defn get-actor-new-mail-ch
+  [actor]
+  (:new-mail-ch actor))
+
+(defn apply-actor-h
+  [state role msg]
+  (let [kind (get-msg-kind msg)
+        h (find-suitable-handler role kind)]
+    (binding [*current-role* role]
+      (h state msg))))
+
+(defn deliver-msg
   [actor msg]
-  (swap! (get-actor-mailbox actor) conj msg))
+  (binding [*current-actor* actor]
+    (swap! (get-actor-state actor)
+           apply-actor-h
+           (get-actor-role actor)
+           msg)))
 
-(defn add-actor-child
-  "Adds the child to the actor's children."
-  [actor name child]
-  (swap! (get-actor-children actor) assoc name child))
+(defn fetch-msg
+  [trigger-ch !mailbox]
+  (async/go
+    (when (<! trigger-ch)
+      (let [msg (first @!mailbox)]
+        (swap! !mailbox subvec 1)
+        msg))))
 
-(defn spawn
-  "Spawns a new actor."
-  [role name]
-  (make-actor role name))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Basic Actor Role
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(defn- basic-actor-start-h
-  [_ctx _state _payload]
-  (println "Starting the basic actor!"))
-
-(def ^:private basic-actor-role
-  (make-role nil {::start #'basic-actor-start-h}))
-
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; System NS Role
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(defn- system-start-h
-  [_ctx _state {:keys [main-actor]}]
-  (tap> main-actor)
-  (println "Starting the system!"))
-
-(def ^:private system-role
-  (make-role nil {::start #'system-start-h}))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; User NS Role
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(defn- user-start-h
-  [_ctx _state _payload]
-  (println "Starting the user ns!"))
-
-(def ^:private user-role
-  (make-role #'basic-actor-role nil {::start #'user-start-h}))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(defonce ^:private system (atom nil))
-
-(defn make-system
-  [name main-actor]
-  (make-actor #'system-role name {:main-actor main-actor}))
-
-(defn run-callback
-  "Runs the callback with the msg on the actor.
-  Returns the updated actor."
-  [actor callback msg]
-  (callback actor
-            (get-actor-state actor)
-            (get-msg-payload msg)))
-
-(defn- call
-  ([actor msg]
-   (let [role (get-actor-role actor)
-         msg-type (get-msg-type msg)
-         callback (get-role-callback role msg-type)]
-     (if callback
-       (run-callback actor callback msg)
-       (throw (ex-info "No callback. Message lost." {:role role :msg msg}))))))
+(defn start-postman
+  [actor]
+  (let [new-mail-ch (get-actor-new-mail-ch actor)
+        mailbox (get-actor-mailbox actor)]
+    (async/go-loop []
+      (println "Waiting for message...")
+      (when-let [msg (<! (fetch-msg new-mail-ch mailbox))]
+        (deliver-msg actor msg)
+        (recur)))))
 
 (defn start-actor
   [actor]
-  (call actor (make-msg ::start (get-actor-props actor))))
+  (start-postman actor)
+  (deliver-msg actor (make-msg ::start (get-actor-props actor))))
+
+(defn super
+  [state msg]
+  (when-not *current-role*
+    (throw (ex-info "`super` can only be called in a message handler!"
+                    {:state state :msg msg})))
+  (if-let [base (get-role-base *current-role*)]
+    (apply-actor-h state base msg)
+    state))
+
+(defn base-start-h
+  [state _msg]
+  state)
+
+(def base-handler-not-found-h default-h)
+
+(def actor-role
+  (make-role
+   {::start #'base-start-h
+    ::handler-not-found #'base-handler-not-found-h}))
+
+(defn derive-role
+  ([handlers]
+   (make-role #'actor-role handlers))
+  ([base handlers]
+   (make-role base handlers)))
+
+(defn spawn!
+  ([role name]
+   (spawn! role name nil))
+  ([role name props]
+   (when-not *current-actor*
+     (throw (ex-info "`spawn` can only be called in a message handler!" {:role role :name name})))
+   (let [children (get-actor-children *current-actor*)
+         new-actor (make-actor role name props)]
+     (swap! children assoc name new-actor)
+     (start-actor new-actor))))
+
+(defn system-start-h
+  [state msg]
+  (let [new-state (super state msg)
+        {:keys [main-actor-role main-actor-name main-actor-props]} (get-msg-payload msg)]
+    (println "Starting system...")
+    (println (str "Main actor role: " main-actor-role))
+    (println (str "Main actor name: " main-actor-name))
+    (println (str "Main actor props: " main-actor-props))
+    (spawn! main-actor-role main-actor-name main-actor-props)
+    new-state))
+
+(def system-role
+  (derive-role
+   {::start #'system-start-h}))
 
 (defn start-system
-  ([main-actor]
-   (start-system no-hop main-actor))
-  ([root-path main-actor]
-   (let [main-actor-name (get-actor-name main-actor)
-         new-system (make-system root-path main-actor)]
-     (start-actor new-system)
+  ([role name]
+   (start-system role name nil))
+  ([role name props]
+   (let [new-system (make-actor #'system-role "" {:main-actor-role role
+                                                  :main-actor-name name
+                                                  :main-actor-props props})]
      (reset! system new-system)
-     main-actor-name)))
+     (start-actor new-system)
+     name)))
 
-(defn deliver-msg
-  "Delivers a message to the actor's mailbox and returns the actor."
-  ([actor addr msg]
-   (if-let [target (get-actor-child actor addr)]
-     (add-to-actor-mailbox target msg)
-     (println (str "Unknown address! Message dropped: " {:addr addr :msg msg})))))
+(def hop-separator "/")
+(def hop-separator-re (re-pattern hop-separator))
+
+(defn addr-hops
+  [addr]
+  (str/split addr hop-separator-re))
+
+(defn first-addr-hop
+  [addr]
+  (first (addr-hops addr)))
+
+(defn next-hop-addr
+  [addr]
+  (str/join hop-separator (rest (addr-hops addr))))
+
+(defn find-child-at
+  [actor addr]
+  (let [child-name (first-addr-hop addr)
+        next-hop (next-hop-addr addr)]
+    (when-let [child (get-actor-child actor child-name)]
+      (if (= "" next-hop)
+        child
+        (recur child next-hop)))))
+
+(defn resolve-addr
+  [addr]
+  (find-child-at (deref system) addr))
+
+(defn add-msg-to-mailbox
+  [mailbox msg]
+  (swap! mailbox conj msg))
+
+(defn trigger-delivery
+  [actor]
+  (let [ch (get-actor-new-mail-ch actor)]
+    (async/put! ch true)))
 
 (defn tell
-  "Sends a message to the actor."
-  ([addr msg]
-   (tell (deref system) addr msg))
-  ([system addr msg]
-   (deliver-msg system addr msg)))
+  [to msg]
+  (if-let [actor (resolve-addr to)]
+    (let [mailbox (get-actor-mailbox actor)]
+      (add-msg-to-mailbox mailbox msg)
+      (trigger-delivery actor))
+    (println (str "No actor at address: "
+                  to
+                  " Message dropped: "
+                  msg))))
 
 (comment
-  (defn say-hello-h
-    [_ctx _state payload]
-    (println (str "Hello " payload ".")))
-
+  (defn greeter-start-h
+    [state msg]
+    (let [{:keys [greeting]} (get-msg-payload msg)]
+      (-> (super state msg)
+          (assoc :greeting greeting))))
+  
+  (defn greeter-greet-h
+    [state msg]
+    (println (str (:greeting state) " " (get-msg-payload msg) "!"))
+    state)
+  
   (def greeter-role
-    (make-role
-     {:greet #'say-hello-h}))
+    (derive-role
+     {::start #'greeter-start-h
+      :greet #'greeter-greet-h}))
+  
+  (def my-actor-ref (start-system #'greeter-role "greeter" {:greeting "Hello"}))
+  (tell my-actor-ref (make-msg :greet "Yorik"))
 
-  (def my-actor (make-actor #'greeter-role "greeter"))
-  (def my-actor-addr (start-system my-actor))
-  (get-actor-child (deref system) "greeter")
-  (tell my-actor-addr (make-msg :greet "Andrey"))
+  (tap> system)
 
-  (ns-unmap (find-ns 'eploko.globe) 'nested-actor-child-path)
+  (find-suitable-handler system-role ::start)
+
+  (ns-unmap (find-ns 'eploko.globe2) 'perform-cb)
   ,)
