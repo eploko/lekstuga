@@ -309,7 +309,7 @@
    (spawn! role child-name nil))
   ([role child-name props]
    (when-not *current-actor*
-     (throw (ex-info "`spawn` can only be called in a message handler!" {:role role :name child-name})))
+     (throw (ex-info "`spawn!` can only be called in a message handler!" {:role role :name child-name})))
    (let [child-addr (join-addrs (get-actor-addr *current-actor*) child-name)
          new-actor (make-actor role child-addr props)]
      (add-actor-child *current-actor* new-actor)
