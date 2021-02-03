@@ -169,7 +169,7 @@
     :props props
     :state (atom nil)
     :mailbox (atom [])
-    :new-mail-ch (async/chan)
+    :new-mail-ch (atom nil)
     :children (atom {})}))
 
 (defn get-actor-role
@@ -210,7 +210,16 @@
 
 (defn get-actor-new-mail-ch
   [actor]
-  (:new-mail-ch actor))
+  (deref (:new-mail-ch actor)))
+
+(defn init-actor-new-mail-ch
+  [actor]
+  (reset! (:new-mail-ch actor) (async/chan)))
+
+(defn close-actor-new-mail-ch
+  [actor]
+  (async/close! (get-actor-new-mail-ch actor))
+  (reset! (:new-mail-ch actor) nil))
 
 (defn add-actor-child
   [actor child-actor]
@@ -289,12 +298,12 @@
 (defn start-postman
   [actor]
   (run-postman actor
-               (get-actor-new-mail-ch actor)
+               (init-actor-new-mail-ch actor)
                (get-actor-mailbox actor)))
 
 (defn stop-postman
   [actor]
-  (async/close! (get-actor-new-mail-ch actor)))
+  (close-actor-new-mail-ch actor))
 
 (defn start-actor
   [actor]
@@ -307,6 +316,14 @@
   (println (str "Stopping actor:" actor))
   (stop-postman actor)
   (deliver-msg actor (make-msg ::did-stop)))
+
+(defn restart-actor
+  [actor]
+  (println (str "Restarting: " actor))
+  (deliver-msg actor (make-msg ::will-restart))
+  (stop-actor actor)
+  (start-actor actor)
+  (deliver-msg actor (make-msg ::did-restart)))
 
 (defn spawn!
   ([role child-name]
@@ -334,9 +351,7 @@
      (throw (ex-info "`restart!` can only be called in a message handler!" {})))
    (restart! *current-actor*))
   ([actor]
-   #_(stop-actor actor)
-   #_(remove-actor-child (get-actor-parent actor) actor)
-   (println (str "Restarting: " actor))))
+   (restart-actor actor)))
 
 (defn super
   [state msg]
@@ -485,7 +500,7 @@
 
   (find-suitable-handler system-role ::will-start)
 
-  (ns-unmap (find-ns 'eploko.globe2) 'greeter-will-start-h)
+  (ns-unmap (find-ns 'eploko.globe2) 'init-new-mail-ch)
 
   ;; all names in the ns
   (filter #(str/starts-with? % "#'eploko.globe2/")
