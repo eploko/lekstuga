@@ -69,12 +69,103 @@
       (get-role-handler role ::handler-not-found)
       default-h))
 
+(def system-addr "/")
+(def hop-separator "/")
+(def hop-separator-re (re-pattern hop-separator))
+(def root-hop "")
+
+(defn root-hop?
+  [hop]
+  (= root-hop hop))
+
+(defn system-addr?
+  [addr]
+  (= addr system-addr))
+
+(defn absolute-addr?
+  [addr]
+  (str/starts-with? addr "/"))
+
+(defn addr-hops
+  [addr]
+  (if (system-addr? addr)
+    [""]
+    (str/split addr hop-separator-re)))
+
+(comment
+  (addr-hops "/")
+  (addr-hops "")
+  (addr-hops "/user")
+  (addr-hops "/user/greeter")
+  (addr-hops "user/greeter")
+  ,)
+
+(defn join-hops
+  [hops]
+  (str/join hop-separator hops))
+
+(comment
+  (join-hops ["" "one" "two"])
+  ,)
+
+(defn first-addr-hop
+  [addr]
+  (first (addr-hops addr)))
+
+(defn last-addr-hop
+  [addr]
+  (last (addr-hops addr)))
+
+(defn join-addrs
+  [a b]
+  (join-hops
+   (concat (addr-hops a)
+           (remove #{""} (addr-hops b)))))
+
+(comment
+  (join-addrs "user" "greeter")
+  (join-addrs "/user" "greeter")
+  (join-addrs "/user" "/greeter")
+  ,)
+
+(defn addr-relative-to
+  [parent a]
+  (let [parent-hops (addr-hops parent)
+        a-hops (addr-hops a)]
+    (if (= (seq parent-hops) (take (count parent-hops) a-hops))
+      (join-hops (drop (count parent-hops) a-hops))
+      (throw (ex-info "Addresses are not related!" {:parent parent :a a})))))
+
+(comment
+  (addr-relative-to "/" "/user")
+  (addr-relative-to "/user/eee" "/user/eee/some/other")
+  ,)
+
+(defn parent-addr
+  [addr]
+  (let [hops (addr-hops addr)]
+    (when (< 1 (count hops))
+      (let [parent-hops (butlast hops)]
+        (if (and (= 1 (count parent-hops))
+                 (root-hop? (first parent-hops)))
+          hop-separator
+          (join-hops parent-hops))))))
+
+(comment
+  (parent-addr "")
+  (parent-addr "/")
+  (parent-addr "/user")
+  (parent-addr "user")
+  (parent-addr "one/two")
+  (parent-addr "/one/two")
+  ,)
+
 (defn make-actor
-  ([role actor-name]
-   (make-actor role actor-name nil))
-  ([role actor-name props]
+  ([role addr]
+   (make-actor role addr nil))
+  ([role addr props]
    {:role role
-    :name actor-name
+    :addr addr
     :props props
     :state (atom nil)
     :mailbox (atom [])
@@ -85,9 +176,17 @@
   [actor]
   (devar (:role actor)))
 
+(defn get-actor-addr
+  [actor]
+  (:addr actor))
+
+(defn get-actor-parent-addr
+  [actor]
+  (parent-addr (get-actor-addr actor)))
+
 (defn get-actor-name
   [actor]
-  (:name actor))
+  (last-addr-hop (get-actor-addr actor)))
 
 (defn get-actor-state
   [actor]
@@ -115,8 +214,13 @@
 
 (defn add-actor-child
   [actor child-actor]
-  (let [children (get-actor-children actor)]
-    (swap! children assoc (get-actor-name child-actor) child-actor)))
+  (swap! (get-actor-children actor)
+         assoc (get-actor-name child-actor) child-actor))
+
+(defn remove-actor-child
+  [actor child-actor]
+  (swap! (get-actor-children actor)
+         dissoc (get-actor-name child-actor)))
 
 (defn apply-actor-h
   [state role msg]
@@ -124,6 +228,34 @@
         h (find-suitable-handler role kind)]
     (binding [*current-role* role]
       (h state msg))))
+
+(defn find-child-at
+  [actor addr]
+  (let [relative-addr (addr-relative-to (get-actor-addr actor) addr)
+        child-name (first-addr-hop relative-addr)]
+    (when-let [child (get-actor-child actor child-name)]
+      (if (= addr (get-actor-addr child))
+        child
+        (recur child addr)))))
+
+(defn resolve-addr
+  [addr]
+  (if (system-addr? addr)
+    (deref system)
+    (find-child-at (deref system) addr)))
+
+(comment
+  (first-addr-hop "user")
+  (addr-relative-to "/" "/user")
+  (resolve-addr "/")
+  (resolve-addr "/user")
+  (resolve-addr "/user/greeter")
+  (resolve-addr "/non-existent")
+  ,)
+
+(defn get-actor-parent
+  [actor]
+  (resolve-addr (get-actor-parent-addr actor)))
 
 (defn deliver-msg
   [actor msg]
@@ -178,7 +310,8 @@
   ([role child-name props]
    (when-not *current-actor*
      (throw (ex-info "`spawn` can only be called in a message handler!" {:role role :name child-name})))
-   (let [new-actor (make-actor role child-name props)]
+   (let [child-addr (join-addrs (get-actor-addr *current-actor*) child-name)
+         new-actor (make-actor role child-addr props)]
      (add-actor-child *current-actor* new-actor)
      (start-actor new-actor))))
 
@@ -189,7 +322,7 @@
    (stop! *current-actor*))
   ([actor]
    (stop-actor actor)
-   #_(remove-actor-child parent actor)))
+   (remove-actor-child (get-actor-parent actor) actor)))
 
 (defn super
   [state msg]
@@ -199,35 +332,6 @@
   (if-let [base (get-role-base *current-role*)]
     (apply-actor-h state base msg)
     state))
-
-(def system-addr "")
-(def hop-separator "/")
-(def hop-separator-re (re-pattern hop-separator))
-
-(defn addr-hops
-  [addr]
-  (str/split addr hop-separator-re))
-
-(defn first-addr-hop
-  [addr]
-  (first (addr-hops addr)))
-
-(defn next-hop-addr
-  [addr]
-  (str/join hop-separator (rest (addr-hops addr))))
-
-(defn find-child-at
-  [actor addr]
-  (let [child-name (first-addr-hop addr)
-        next-hop (next-hop-addr addr)]
-    (when-let [child (get-actor-child actor child-name)]
-      (if (= "" next-hop)
-        child
-        (recur child next-hop)))))
-
-(defn resolve-addr
-  [addr]
-  (find-child-at (deref system) addr))
 
 (defn base-will-start-h
   [state _msg]
@@ -271,7 +375,7 @@
 (defn system-will-start-h
   [state msg]
   (let [new-state (super state msg)]
-    (spawn! user-ns-role
+    (spawn! #'user-ns-role
             "user"
             (select-keys (get-msg-payload msg)
                          [:main-actor-role :main-actor-name :main-actor-props]))
@@ -292,7 +396,7 @@
                                  :main-actor-props props})]
      (reset! system new-system)
      (start-actor new-system)
-     name)))
+     (join-addrs "/user" name))))
 
 (defn add-msg-to-mailbox
   [mailbox msg]
@@ -345,5 +449,5 @@
 
   (find-suitable-handler system-role ::will-start)
 
-  (ns-unmap (find-ns 'eploko.globe2) 'fail!)
+  (ns-unmap (find-ns 'eploko.globe2) 'next-hop-addr)
   ,)
