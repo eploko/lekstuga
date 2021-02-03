@@ -85,6 +85,10 @@
   [actor]
   (devar (:role actor)))
 
+(defn get-actor-name
+  [actor]
+  (:name actor))
+
 (defn get-actor-state
   [actor]
   (:state actor))
@@ -112,7 +116,7 @@
 (defn add-actor-child
   [actor child-actor]
   (let [children (get-actor-children actor)]
-    (swap! children assoc name child-actor)))
+    (swap! children assoc (get-actor-name child-actor) child-actor)))
 
 (defn apply-actor-h
   [state role msg]
@@ -169,12 +173,12 @@
   (deliver-msg actor (make-msg ::did-stop)))
 
 (defn spawn!
-  ([role name]
-   (spawn! role name nil))
-  ([role name props]
+  ([role child-name]
+   (spawn! role child-name nil))
+  ([role child-name props]
    (when-not *current-actor*
-     (throw (ex-info "`spawn` can only be called in a message handler!" {:role role :name name})))
-   (let [new-actor (make-actor role name props)]
+     (throw (ex-info "`spawn` can only be called in a message handler!" {:role role :name child-name})))
+   (let [new-actor (make-actor role child-name props)]
      (add-actor-child *current-actor* new-actor)
      (start-actor new-actor))))
 
@@ -195,6 +199,35 @@
   (if-let [base (get-role-base *current-role*)]
     (apply-actor-h state base msg)
     state))
+
+(def system-addr "")
+(def hop-separator "/")
+(def hop-separator-re (re-pattern hop-separator))
+
+(defn addr-hops
+  [addr]
+  (str/split addr hop-separator-re))
+
+(defn first-addr-hop
+  [addr]
+  (first (addr-hops addr)))
+
+(defn next-hop-addr
+  [addr]
+  (str/join hop-separator (rest (addr-hops addr))))
+
+(defn find-child-at
+  [actor addr]
+  (let [child-name (first-addr-hop addr)
+        next-hop (next-hop-addr addr)]
+    (when-let [child (get-actor-child actor child-name)]
+      (if (= "" next-hop)
+        child
+        (recur child next-hop)))))
+
+(defn resolve-addr
+  [addr]
+  (find-child-at (deref system) addr))
 
 (defn base-will-start-h
   [state _msg]
@@ -224,11 +257,24 @@
   ([base handlers]
    (make-role base handlers)))
 
-(defn system-will-start-h
+(defn user-ns-will-start-h
   [state msg]
   (let [new-state (super state msg)
         {:keys [main-actor-role main-actor-name main-actor-props]} (get-msg-payload msg)]
     (spawn! main-actor-role main-actor-name main-actor-props)
+    new-state))
+
+(def user-ns-role
+  (derive-role
+   {::will-start #'user-ns-will-start-h}))
+
+(defn system-will-start-h
+  [state msg]
+  (let [new-state (super state msg)]
+    (spawn! user-ns-role
+            "user"
+            (select-keys (get-msg-payload msg)
+                         [:main-actor-role :main-actor-name :main-actor-props]))
     new-state))
 
 (def system-role
@@ -239,40 +285,14 @@
   ([role name]
    (start-system role name nil))
   ([role name props]
-   (let [new-system (make-actor #'system-role "" {:main-actor-role role
-                                                  :main-actor-name name
-                                                  :main-actor-props props})]
+   (let [new-system (make-actor #'system-role
+                                system-addr
+                                {:main-actor-role role
+                                 :main-actor-name name
+                                 :main-actor-props props})]
      (reset! system new-system)
      (start-actor new-system)
      name)))
-
-(def hop-separator "/")
-(def hop-separator-re (re-pattern hop-separator))
-
-(defn addr-hops
-  [addr]
-  (str/split addr hop-separator-re))
-
-(defn first-addr-hop
-  [addr]
-  (first (addr-hops addr)))
-
-(defn next-hop-addr
-  [addr]
-  (str/join hop-separator (rest (addr-hops addr))))
-
-(defn find-child-at
-  [actor addr]
-  (let [child-name (first-addr-hop addr)
-        next-hop (next-hop-addr addr)]
-    (when-let [child (get-actor-child actor child-name)]
-      (if (= "" next-hop)
-        child
-        (recur child next-hop)))))
-
-(defn resolve-addr
-  [addr]
-  (find-child-at (deref system) addr))
 
 (defn add-msg-to-mailbox
   [mailbox msg]
