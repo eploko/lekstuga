@@ -260,10 +260,13 @@
 (defn deliver-msg
   [actor msg]
   (binding [*current-actor* actor]
-    (swap! (get-actor-state actor)
-           apply-actor-h
-           (get-actor-role actor)
-           msg)))
+    (try
+      (swap! (get-actor-state actor)
+             apply-actor-h
+             (get-actor-role actor)
+             msg)
+      (catch Exception e
+        (println (str "Yo!" e))))))
 
 (defn fetch-msg
   [trigger-ch !mailbox]
@@ -295,7 +298,8 @@
 
 (defn start-actor
   [actor]
-  (deliver-msg actor (make-msg ::will-start (get-actor-props actor)))
+  (deliver-msg actor (make-msg ::init (get-actor-props actor)))
+  (deliver-msg actor (make-msg ::will-start))
   (start-postman actor))
 
 (defn stop-actor
@@ -324,6 +328,16 @@
    (stop-actor actor)
    (remove-actor-child (get-actor-parent actor) actor)))
 
+(defn restart!
+  ([]
+   (when-not *current-actor*
+     (throw (ex-info "`restart!` can only be called in a message handler!" {})))
+   (restart! *current-actor*))
+  ([actor]
+   #_(stop-actor actor)
+   #_(remove-actor-child (get-actor-parent actor) actor)
+   (println (str "Restarting: " actor))))
+
 (defn super
   [state msg]
   (when-not *current-role*
@@ -332,6 +346,10 @@
   (if-let [base (get-role-base *current-role*)]
     (apply-actor-h state base msg)
     state))
+
+(defn base-init-h
+  [state _msg]
+  state)
 
 (defn base-will-start-h
   [state _msg]
@@ -346,14 +364,31 @@
   (stop!)
   state)
 
+(defn base-restart-h
+  [state _msg]
+  (restart!)
+  state)
+
+(defn base-will-restart-h
+  [state _msg]
+  state)
+
+(defn base-did-restart-h
+  [state _msg]
+  state)
+
 (def base-handler-not-found-h default-h)
 
 (def actor-role
   (make-role
-   {::did-stop #'base-did-stop-h
+   {::did-restart #'base-did-restart-h
+    ::did-stop #'base-did-stop-h
+    ::handler-not-found #'base-handler-not-found-h
+    ::init #'base-init-h
+    ::restart #'base-restart-h
     ::stop #'base-stop-h
-    ::will-start #'base-will-start-h
-    ::handler-not-found #'base-handler-not-found-h}))
+    ::will-restart #'base-will-restart-h
+    ::will-start #'base-will-start-h}))
 
 (defn derive-role
   ([handlers]
@@ -361,7 +396,7 @@
   ([base handlers]
    (make-role base handlers)))
 
-(defn user-ns-will-start-h
+(defn user-ns-init-h
   [state msg]
   (let [new-state (super state msg)
         {:keys [main-actor-role main-actor-name main-actor-props]} (get-msg-payload msg)]
@@ -370,9 +405,9 @@
 
 (def user-ns-role
   (derive-role
-   {::will-start #'user-ns-will-start-h}))
+   {::init #'user-ns-init-h}))
 
-(defn system-will-start-h
+(defn system-init-h
   [state msg]
   (let [new-state (super state msg)]
     (spawn! #'user-ns-role
@@ -383,7 +418,7 @@
 
 (def system-role
   (derive-role
-   {::will-start #'system-will-start-h}))
+   {::init #'system-init-h}))
 
 (defn start-system
   ([role name]
@@ -419,7 +454,7 @@
                   msg))))
 
 (comment
-  (defn greeter-will-start-h
+  (defn greeter-init-h
     [state msg]
     (let [{:keys [greeting]} (get-msg-payload msg)]
       (-> (super state msg)
@@ -436,20 +471,21 @@
   
   (def greeter-role
     (derive-role
-     {::will-start #'greeter-will-start-h
+     {::init #'greeter-init-h
       :fail #'greeter-fail-h
       :greet #'greeter-greet-h}))
   
   (def my-actor-ref (start-system #'greeter-role "greeter" {:greeting "Hello"}))
   (tell my-actor-ref (make-msg :greet "Yorik"))
   (tell my-actor-ref (make-msg ::stop))
+  (tell my-actor-ref (make-msg ::restart))
   (tell my-actor-ref (make-msg :fail))
 
   (tap> system)
 
   (find-suitable-handler system-role ::will-start)
 
-  (ns-unmap (find-ns 'eploko.globe2) 'next-hop-addr)
+  (ns-unmap (find-ns 'eploko.globe2) 'greeter-will-start-h)
 
   ;; all names in the ns
   (filter #(str/starts-with? % "#'eploko.globe2/")
