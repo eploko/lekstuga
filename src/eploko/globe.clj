@@ -1,6 +1,6 @@
 (ns eploko.globe2
   (:require
-   [clojure.core.async :as async :refer [<! go]]
+   [clojure.core.async :as async :refer [<!]]
    [clojure.string :as str]))
 
 (defn devar
@@ -109,6 +109,11 @@
   [actor]
   (:new-mail-ch actor))
 
+(defn add-actor-child
+  [actor child-actor]
+  (let [children (get-actor-children actor)]
+    (swap! children assoc name child-actor)))
+
 (defn apply-actor-h
   [state role msg]
   (let [kind (get-msg-kind msg)
@@ -132,20 +137,55 @@
         (swap! !mailbox subvec 1)
         msg))))
 
+(defn run-postman
+  [actor new-mail-ch mailbox]
+  (println (str "Postman [" actor "] started." ))
+  (async/go-loop []
+    (if-let [msg (<! (fetch-msg new-mail-ch mailbox))]
+      (do 
+        (deliver-msg actor msg)
+        (recur))
+      (println (str "Postman [" actor "] stopped." )))))
+
 (defn start-postman
   [actor]
-  (let [new-mail-ch (get-actor-new-mail-ch actor)
-        mailbox (get-actor-mailbox actor)]
-    (async/go-loop []
-      (println "Waiting for message...")
-      (when-let [msg (<! (fetch-msg new-mail-ch mailbox))]
-        (deliver-msg actor msg)
-        (recur)))))
+  (run-postman actor
+               (get-actor-new-mail-ch actor)
+               (get-actor-mailbox actor)))
+
+(defn stop-postman
+  [actor]
+  (async/close! (get-actor-new-mail-ch actor)))
 
 (defn start-actor
   [actor]
-  (start-postman actor)
-  (deliver-msg actor (make-msg ::start (get-actor-props actor))))
+  (deliver-msg actor (make-msg ::will-start (get-actor-props actor)))
+  (start-postman actor))
+
+(defn stop-actor
+  [actor]
+  (println (str "Stopping actor:" actor))
+  (stop-postman actor)
+  (deliver-msg actor (make-msg ::did-stop)))
+
+(defn spawn!
+  ([role name]
+   (spawn! role name nil))
+  ([role name props]
+   (when-not *current-actor*
+     (throw (ex-info "`spawn` can only be called in a message handler!" {:role role :name name})))
+   (let [new-actor (make-actor role name props)]
+     (add-actor-child *current-actor* new-actor)
+     (start-actor new-actor))))
+
+(defn stop!
+  ([]
+   (when-not *current-actor*
+     (throw (ex-info "`stop!` can only be called in a message handler!" {})))
+   (stop! *current-actor*))
+  ([actor]
+   (stop-actor actor)
+   #_(remove-actor-child parent actor)))
 
 (defn super
   [state msg]
@@ -156,15 +196,26 @@
     (apply-actor-h state base msg)
     state))
 
-(defn base-start-h
+(defn base-will-start-h
   [state _msg]
+  state)
+
+(defn base-did-stop-h
+  [state _msg]
+  state)
+
+(defn base-stop-h
+  [state _msg]
+  (stop!)
   state)
 
 (def base-handler-not-found-h default-h)
 
 (def actor-role
   (make-role
-   {::start #'base-start-h
+   {::did-stop #'base-did-stop-h
+    ::stop #'base-stop-h
+    ::will-start #'base-will-start-h
     ::handler-not-found #'base-handler-not-found-h}))
 
 (defn derive-role
@@ -173,31 +224,16 @@
   ([base handlers]
    (make-role base handlers)))
 
-(defn spawn!
-  ([role name]
-   (spawn! role name nil))
-  ([role name props]
-   (when-not *current-actor*
-     (throw (ex-info "`spawn` can only be called in a message handler!" {:role role :name name})))
-   (let [children (get-actor-children *current-actor*)
-         new-actor (make-actor role name props)]
-     (swap! children assoc name new-actor)
-     (start-actor new-actor))))
-
-(defn system-start-h
+(defn system-will-start-h
   [state msg]
   (let [new-state (super state msg)
         {:keys [main-actor-role main-actor-name main-actor-props]} (get-msg-payload msg)]
-    (println "Starting system...")
-    (println (str "Main actor role: " main-actor-role))
-    (println (str "Main actor name: " main-actor-name))
-    (println (str "Main actor props: " main-actor-props))
     (spawn! main-actor-role main-actor-name main-actor-props)
     new-state))
 
 (def system-role
   (derive-role
-   {::start #'system-start-h}))
+   {::will-start #'system-will-start-h}))
 
 (defn start-system
   ([role name]
@@ -259,11 +295,15 @@
                   msg))))
 
 (comment
-  (defn greeter-start-h
+  (defn greeter-will-start-h
     [state msg]
     (let [{:keys [greeting]} (get-msg-payload msg)]
       (-> (super state msg)
           (assoc :greeting greeting))))
+
+  (defn greeter-fail-h
+    [_state _]
+    (throw (ex-info "Greeter failed!" {})))
   
   (defn greeter-greet-h
     [state msg]
@@ -272,15 +312,18 @@
   
   (def greeter-role
     (derive-role
-     {::start #'greeter-start-h
+     {::will-start #'greeter-will-start-h
+      :fail #'greeter-fail-h
       :greet #'greeter-greet-h}))
   
   (def my-actor-ref (start-system #'greeter-role "greeter" {:greeting "Hello"}))
   (tell my-actor-ref (make-msg :greet "Yorik"))
+  (tell my-actor-ref (make-msg ::stop))
+  (tell my-actor-ref (make-msg :fail))
 
   (tap> system)
 
-  (find-suitable-handler system-role ::start)
+  (find-suitable-handler system-role ::will-start)
 
-  (ns-unmap (find-ns 'eploko.globe2) 'perform-cb)
+  (ns-unmap (find-ns 'eploko.globe2) 'fail!)
   ,)
