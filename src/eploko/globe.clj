@@ -450,4 +450,10 @@
   (find-suitable-handler system-role ::will-start)
 
   (ns-unmap (find-ns 'eploko.globe2) 'next-hop-addr)
+
+  ;; all names in the ns
+  (filter #(str/starts-with? % "#'eploko.globe2/")
+          (map str
+               (vals
+                (ns-map (find-ns 'eploko.globe2)))))
   ,)
