@@ -1,4 +1,4 @@
-(ns eploko.globe2
+(ns eploko.globe
   (:require
    [clojure.core.async :as async :refer [<!]]
    [clojure.string :as str]))
@@ -9,6 +9,14 @@
   (or (and (var? var-or-val)
            (deref var-or-val))
       var-or-val))
+
+(defn queue
+  ([] (clojure.lang.PersistentQueue/EMPTY))
+  ([coll]
+   (reduce conj clojure.lang.PersistentQueue/EMPTY coll)))
+
+(defn noop
+  [])
 
 (declare ^:dynamic *current-actor*)
 (declare ^:dynamic *current-role*)
@@ -167,8 +175,10 @@
    {:role role
     :addr addr
     :props props
+    :ops (atom (queue))
+    :new-op-ch (async/chan)
     :state (atom nil)
-    :mailbox (atom [])
+    :mailbox (atom (queue))
     :new-mail-ch (atom nil)
     :children (atom {})}))
 
@@ -187,6 +197,14 @@
 (defn get-actor-name
   [actor]
   (last-addr-hop (get-actor-addr actor)))
+
+(defn get-actor-ops
+  [actor]
+  (:ops actor))
+
+(defn get-actor-new-op-ch
+  [actor]
+  (:new-op-ch actor))
 
 (defn get-actor-state
   [actor]
@@ -216,6 +234,24 @@
   [actor]
   (deref (:new-mail-ch actor)))
 
+(defn alog
+  [actor & args]
+  (println (apply str "[" (get-actor-addr actor) "] " args)))
+
+(defn enqueu
+  [actor get-queue-fn get-trigger-ch-fn x]
+  (swap! (get-queue-fn actor) conj x)
+  (async/put! (get-trigger-ch-fn actor) true))
+
+(defn enqueue-op
+  [actor f & args]
+  (enqueu actor get-actor-ops get-actor-new-op-ch
+          (apply partial f actor args)))
+
+(defn enqueue-msg
+  [actor msg]
+  (enqueu actor get-actor-mailbox get-actor-new-mail-ch msg))
+
 (defn init-actor-new-mail-ch
   [actor]
   (reset! (:new-mail-ch actor) (async/chan)))
@@ -224,6 +260,10 @@
   [actor]
   (async/close! (get-actor-new-mail-ch actor))
   (reset! (:new-mail-ch actor) nil))
+
+(defn close-actor-new-op-ch
+  [actor]
+  (async/close! (get-actor-new-op-ch actor)))
 
 (defn add-actor-child
   [actor child-actor]
@@ -268,7 +308,8 @@
 
 (defn get-actor-parent
   [actor]
-  (resolve-addr (get-actor-parent-addr actor)))
+  (when-let [addr (get-actor-parent-addr actor)]
+    (resolve-addr addr)))
 
 (defn deliver-msg
   [actor msg]
@@ -279,90 +320,122 @@
              (get-actor-role actor)
              msg)
       (catch Exception e
-        (println (str "Yo!" e))))))
+        (alog "failed with: " e)))))
 
-(defn fetch-msg
+(defn fetch-from-queue
   [trigger-ch !mailbox]
   (async/go
     (when (<! trigger-ch)
-      (let [msg (first @!mailbox)]
-        (swap! !mailbox subvec 1)
+      (let [msg (peek @!mailbox)]
+        (swap! !mailbox pop)
         msg))))
 
-(defn run-postman
-  [actor new-mail-ch mailbox]
-  (println (str "Postman [" actor "] started." ))
+(defn run-queue
+  [trigger-ch q f {:keys [on-start on-finish]
+                   :or {on-start noop
+                        on-finish noop}}]
+  (on-start)
   (async/go-loop []
-    (if-let [msg (<! (fetch-msg new-mail-ch mailbox))]
-      (do 
-        (deliver-msg actor msg)
+    (if-let [msg (<! (fetch-from-queue trigger-ch q))]
+      (do
+        (f msg)
         (recur))
-      (println (str "Postman [" actor "] stopped." )))))
+      (on-finish))))
 
 (defn start-postman
   [actor]
-  (run-postman actor
-               (init-actor-new-mail-ch actor)
-               (get-actor-mailbox actor)))
+  (run-queue
+   (init-actor-new-mail-ch actor)
+   (get-actor-mailbox actor)
+   (partial enqueue-op actor deliver-msg)
+   {:on-start (fn [] (alog actor "postman started."))
+    :on-finish (fn [] (alog actor "postman stopped."))}))
 
 (defn stop-postman
   [actor]
   (close-actor-new-mail-ch actor))
 
+(defn start-ops-runner
+  [actor]
+  (run-queue
+   (get-actor-new-op-ch actor)
+   (get-actor-ops actor)
+   (fn [op] (op))
+   {:on-start (fn [] (alog actor "ops runner started."))
+    :on-finish (fn [] (alog actor "ops runner stopped."))}))
+
+(defn stop-ops-runner
+  [actor]
+  (close-actor-new-op-ch actor))
+
 (defn start-actor
   [actor]
-  (deliver-msg actor (make-msg ::init (get-actor-props actor)))
-  (deliver-msg actor (make-msg ::will-start))
-  (start-postman actor))
+  (enqueue-op actor (fn [actor] (alog actor "starting...")))
+  (enqueue-op actor deliver-msg (make-msg ::init (get-actor-props actor)))
+  (enqueue-op actor deliver-msg (make-msg ::will-start))
+  (enqueue-op actor start-postman))
 
 (defn stop-actor
   [actor]
-  (println (str "Stopping actor:" actor))
-  (stop-postman actor)
-  (deliver-msg actor (make-msg ::did-stop)))
+  (enqueue-op actor (fn [actor] (alog actor "stopping...")))
+  (enqueue-op actor stop-postman)
+  (enqueue-op actor deliver-msg (make-msg ::did-stop)))
 
 (defn restart-actor
   [actor]
-  (println (str "Restarting: " actor))
-  (deliver-msg actor (make-msg ::will-restart))
+  (enqueue-op actor (fn [actor] (alog actor "restarting...")))
+  (enqueue-op actor deliver-msg (make-msg ::will-restart))
   (stop-actor actor)
+  (enqueue-op actor reset-actor-state)
   (start-actor actor)
-  (deliver-msg actor (make-msg ::did-restart)))
+  (enqueue-op actor deliver-msg (make-msg ::did-restart)))
+
+(defn- spawn-in-parent!
+  [parent role child-name props]
+  (let [child-addr (if parent
+                     (join-addrs (get-actor-addr parent) child-name)
+                     system-addr)
+        new-actor (make-actor role child-addr props)]
+    (if parent
+      (add-actor-child parent new-actor)
+      (reset! system new-actor))
+    (start-ops-runner new-actor)
+    (start-actor new-actor)
+    child-addr))
+
+(defn assert-current-actor!
+  [f-name m]
+  (when-not *current-actor*
+    (throw
+     (ex-info
+      (str "`" f-name "` can only be called in a message handler!")
+      m))))
 
 (defn spawn!
   ([role child-name]
    (spawn! role child-name nil))
   ([role child-name props]
-   (when-not *current-actor*
-     (throw (ex-info "`spawn!` can only be called in a message handler!" {:role role :name child-name})))
-   (let [child-addr (join-addrs (get-actor-addr *current-actor*) child-name)
-         new-actor (make-actor role child-addr props)]
-     (add-actor-child *current-actor* new-actor)
-     (start-actor new-actor)
-     child-addr)))
+   (assert-current-actor! "spawn!" {:role role :name child-name})
+   (spawn-in-parent! *current-actor* role child-name props)))
+
+(defn- terminate-actor
+  [actor]
+  (stop-ops-runner actor)
+  (if-let [parent (get-actor-parent actor)]
+    (remove-actor-child parent actor)
+    (reset! system nil)))
 
 (defn stop!
   ([]
-   (when-not *current-actor*
-     (throw (ex-info "`stop!` can only be called in a message handler!" {})))
+   (assert-current-actor! "stop!" {})
    (stop! *current-actor*))
   ([actor]
    (stop-actor actor)
-   (remove-actor-child (get-actor-parent actor) actor)))
-
-(defn restart!
-  ([]
-   (when-not *current-actor*
-     (throw (ex-info "`restart!` can only be called in a message handler!" {})))
-   (restart! *current-actor*))
-  ([actor]
-   (restart-actor actor)))
+   (enqueue-op actor terminate-actor)))
 
 (defn super
   [state msg]
-  (when-not *current-role*
-    (throw (ex-info "`super` can only be called in a message handler!"
-                    {:state state :msg msg})))
+  (assert-current-actor! "super" {:state state :msg msg})
   (if-let [base (get-role-base *current-role*)]
     (apply-actor-h state base msg)
     state))
@@ -384,18 +457,12 @@
   (stop!)
   state)
 
-(defn base-restart-h
-  [state _msg]
-  (restart!)
-  state)
-
 (def actor-role
   (make-role
    {::did-restart #'base-did-restart-h
     ::did-stop #'base-did-stop-h
     ::handler-not-found #'base-handler-not-found-h
     ::init #'base-init-h
-    ::restart #'base-restart-h
     ::stop #'base-stop-h
     ::will-restart #'base-will-restart-h
     ::will-start #'base-will-start-h}))
@@ -434,30 +501,20 @@
   ([role name]
    (start-system role name nil))
   ([role name props]
-   (let [new-system (make-actor #'system-role
-                                system-addr
-                                {:main-actor-role role
-                                 :main-actor-name name
-                                 :main-actor-props props})]
-     (reset! system new-system)
-     (start-actor new-system)
-     (join-addrs "/user" name))))
+   (spawn-in-parent! nil #'system-role ""
+                     {:main-actor-role role
+                      :main-actor-name name
+                      :main-actor-props props})
+   (join-addrs "/user" name)))
 
-(defn add-msg-to-mailbox
-  [mailbox msg]
-  (swap! mailbox conj msg))
-
-(defn trigger-delivery
-  [actor]
-  (let [ch (get-actor-new-mail-ch actor)]
-    (async/put! ch true)))
+(defn stop-system
+  []
+  (stop! (deref system)))
 
 (defn tell
   [to msg]
   (if-let [actor (resolve-addr to)]
-    (let [mailbox (get-actor-mailbox actor)]
-      (add-msg-to-mailbox mailbox msg)
-      (trigger-delivery actor))
+    (enqueue-msg actor msg)
     (println (str "No actor at address: "
                   to
                   " Message dropped: "
@@ -491,11 +548,14 @@
   (tell my-actor-ref (make-msg ::restart))
   (tell my-actor-ref (make-msg :fail))
 
+  (tap> my-actor-ref)
   (tap> system)
+
+  (stop-system)
 
   (find-suitable-handler system-role ::will-start)
 
-  (ns-unmap (find-ns 'eploko.globe2) 'init-new-mail-ch)
+  (ns-unmap (find-ns 'eploko.globe2) 'restart!)
 
   ;; all names in the ns
   (filter #(str/starts-with? % "#'eploko.globe2/")
