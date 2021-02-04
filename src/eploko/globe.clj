@@ -192,6 +192,10 @@
   [actor]
   (:state actor))
 
+(defn reset-actor-state
+  [actor]
+  (reset! (get-actor-state actor) nil))
+
 (defn get-actor-props
   [actor]
   (:props actor))
@@ -334,7 +338,8 @@
    (let [child-addr (join-addrs (get-actor-addr *current-actor*) child-name)
          new-actor (make-actor role child-addr props)]
      (add-actor-child *current-actor* new-actor)
-     (start-actor new-actor))))
+     (start-actor new-actor)
+     child-addr)))
 
 (defn stop!
   ([]
@@ -362,17 +367,17 @@
     (apply-actor-h state base msg)
     state))
 
-(defn base-init-h
+(defn dummy-h
   [state _msg]
   state)
 
-(defn base-will-start-h
-  [state _msg]
-  state)
+(def base-init-h dummy-h)
+(def base-will-start-h dummy-h)
+(def base-did-stop-h dummy-h)
+(def base-will-restart-h dummy-h)
+(def base-did-restart-h dummy-h)
 
-(defn base-did-stop-h
-  [state _msg]
-  state)
+(def base-handler-not-found-h default-h)
 
 (defn base-stop-h
   [state _msg]
@@ -383,16 +388,6 @@
   [state _msg]
   (restart!)
   state)
-
-(defn base-will-restart-h
-  [state _msg]
-  state)
-
-(defn base-did-restart-h
-  [state _msg]
-  state)
-
-(def base-handler-not-found-h default-h)
 
 (def actor-role
   (make-role
