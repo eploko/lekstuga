@@ -3,8 +3,12 @@
    [clojure.core.async :as async :refer [<! >! chan go go-loop]]
    [clojure.string :as str]))
 
+(def did-restart-subj ::did-restart)
+(def did-stop-subj ::did-stop)
 (def init-subj ::init)
 (def proxy-subj ::proxy)
+(def will-restart-subj ::will-restart)
+(def will-start-subj ::will-start)
 
 (defn msg
   ([subj]
@@ -17,11 +21,11 @@
   [msg]
   (:subj msg))
 
-(defn msg-body
+(defn- msg-body
   [msg]
   (:body msg))
 
-(defn unknown-msg-h
+(defn- unknown-msg-h
   [_state _payload]
   (println "Not handled."))
 
@@ -49,15 +53,24 @@
    (spawn! actor {}))
   ([actor props]
    (let [actor-port (run-actor! actor)]
-     (go (>! actor-port (msg init-subj props)))
+     (go (>! actor-port (msg init-subj props))
+         (>! actor-port (msg will-start-subj)))
      actor-port)))
 
 (defn stop!
   [addr]
-  (async/close! addr))
+  (go (>! addr (msg did-stop-subj))
+      (async/close! addr)))
 
 (defn restart!
-  [addr])
+  [addr]
+  (go (>! addr (msg will-restart-subj))
+      (>! addr (msg did-stop-subj))
+      ;; reset state somehow
+      ;; get props somehow
+      #_(>! addr (msg init-subj props))
+      (>! addr (msg will-start-subj))
+      (>! addr (msg did-restart-subj))))
 
 (comment
   (defn init-h
