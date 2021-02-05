@@ -51,10 +51,10 @@
 
 (defn enqueu-op!
   [actor op-f]
-  (go (>! (get-actor-port actor) op-f)))
+  (go (>! (get-actor-port actor) (partial op-f actor))))
 
 (defn- msg-op
-  [actor msg state]
+  [msg actor state]
   (let [subj (msg-subj msg)
         body (msg-body msg)
         role (get-actor-role actor)
@@ -64,23 +64,23 @@
 (defn- start-op
   [actor state]
   (->> state
-       (msg-op actor (mk-msg ::init (get-actor-props actor)))
-       (msg-op actor (mk-msg ::will-start))))
+       (msg-op (mk-msg ::init (get-actor-props actor)) actor)
+       (msg-op (mk-msg ::will-start) actor)))
 
 (defn- stop-op
   [actor state]
-  (msg-op actor (mk-msg ::did-stop) state)
+  (msg-op (mk-msg ::did-stop) actor state)
   (async/close! (get-actor-port actor)))
 
 (defn- restart-op
   [actor state]
   (->> state
-       (msg-op actor (mk-msg ::will-restart))
-       (msg-op actor (mk-msg ::did-stop)))
+       (msg-op (mk-msg ::will-restart) actor)
+       (msg-op (mk-msg ::did-stop) actor))
   (->> nil
-       (msg-op actor (mk-msg ::init (get-actor-props actor)))
-       (msg-op actor (mk-msg ::will-start))
-       (msg-op actor (mk-msg ::did-restart))))
+       (msg-op (mk-msg ::init (get-actor-props actor)) actor)
+       (msg-op (mk-msg ::will-start) actor)
+       (msg-op (mk-msg ::did-restart) actor)))
 
 (defn- run-actor!
   [actor]
@@ -90,7 +90,7 @@
 
 (defn send!
   [actor msg]
-  (enqueu-op! actor (partial msg-op actor msg)))
+  (enqueu-op! actor (partial msg-op msg)))
 
 (defn spawn!
   ([role]
@@ -98,16 +98,16 @@
   ([role props]
    (let [actor (mk-actor role props)]
      (run-actor! actor)
-     (enqueu-op! actor (partial start-op actor))
+     (enqueu-op! actor start-op)
      actor)))
 
 (defn stop!
   [actor]
-  (enqueu-op! actor (partial stop-op actor)))
+  (enqueu-op! actor stop-op))
 
 (defn restart!
   [actor]
-  (enqueu-op! actor (partial restart-op actor)))
+  (enqueu-op! actor restart-op))
 
 (comment
   (defn init-h
