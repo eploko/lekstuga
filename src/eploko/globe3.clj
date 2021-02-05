@@ -7,6 +7,9 @@
 (def did-stop-subj ::did-stop)
 (def init-subj ::init)
 (def proxy-subj ::proxy)
+(def ^:private reset-state-subj ::reset-state)
+(def ^:private set-delivery-mode-subj ::set-delivery-mode)
+(def ^:private terminate-subj ::terminate)
 (def will-restart-subj ::will-restart)
 (def will-start-subj ::will-start)
 
@@ -26,6 +29,10 @@
 (defn- msg-body
   [msg]
   (:body msg))
+
+(defn- emsg
+  [mode body]
+  [mode body])
 
 (defn- toggle-switched-chan-ports
   "Switches the mix to be a solo of the channel under `solo-k`."
@@ -54,22 +61,20 @@
         (async/close! out-port)))
     out-port))
 
-(def ^:private actor-mode-msg :msg)
-(def ^:private actor-mode-ctrl :ctrl)
+(defn- mk-delivery-ports
+  [mailbox-size]
+  {:normal (chan mailbox-size)
+   :oob (chan mailbox-size)})
 
 (defn- mk-actor
   [role props]
-  (let [msg-port (chan mailbox-size)
-        ctrl-port (chan mailbox-size)
+  (let [delivery-ports (mk-delivery-ports mailbox-size)
         runner-feed-ctrl-port (chan)]
     {:role role
      :props props
-     :msg-port msg-port
-     :ctrl-port ctrl-port
+     :delivery-ports delivery-ports
      :runner-feed-ctrl-port runner-feed-ctrl-port
-     :runner-feed (switched-chan runner-feed-ctrl-port
-                                 {actor-mode-msg msg-port
-                                  actor-mode-ctrl ctrl-port})}))
+     :runner-feed (switched-chan runner-feed-ctrl-port delivery-ports)}))
 
 (defn- get-actor-role
   [actor]
@@ -79,13 +84,9 @@
   [actor]
   (:props actor))
 
-(defn- get-actor-msg-port
-  [actor]
-  (:msg-port actor))
-
-(defn- get-actor-ctrl-port
-  [actor]
-  (:ctrl-port actor))
+(defn- get-actor-delivery-port
+  [actor delivery-mode]
+  (get-in actor [:delivery-ports delivery-mode]))
 
 (defn- get-actor-runner-feed
   [actor]
@@ -95,21 +96,22 @@
   [actor]
   (:runner-feed-ctrl-port actor))
 
-(defn- set-actor-mode!
-  [actor mode]
+(defn- set-actor-delivery-mode!
+  [actor delivery-mode]
   (go (>! (get-actor-runner-feed-ctrl-port actor)
-          mode)))
+          delivery-mode)))
 
 (defn send!
-  [actor msg]
-  (go (>! (get-actor-msg-port actor) msg)))
+  [actor msg & {:as opts}]
+  (go (>! (get-actor-delivery-port actor (get opts :delivery-mode :normal))
+          (emsg (get opts :emsg-mode :normal) msg))))
 
-(defn ctrl!
-  [actor msg]
-  (go (>! (get-actor-ctrl-port actor) msg)))
+(defn- ctx-actor
+  [ctx]
+  (:actor ctx))
 
 (defn- unknown-msg-h
-  [state _body]
+  [_ctx state _body]
   (println "Not handled.")
   state)
 
@@ -120,24 +122,44 @@
         (get handlers proxy-subj)
         #'unknown-msg-h)))
 
-(defn- terminate-actor!
-  [actor]
-  (async/close! (get-actor-msg-port actor))
-  (async/close! (get-actor-ctrl-port actor))
-  (async/close! (get-actor-runner-feed-ctrl-port actor))
-  (prn "terminated"))
+(defn- terminate-syscall
+  [ctx _state _body]
+  (let [actor (ctx-actor ctx)]
+    (async/close! (get-actor-delivery-port actor :normal))
+    (async/close! (get-actor-delivery-port actor :oob))
+    (async/close! (get-actor-runner-feed-ctrl-port actor))
+    (prn "terminated")))
+
+(defn- set-delivery-mode-syscall
+  [ctx state body]
+  (set-actor-delivery-mode! (ctx-actor ctx) body)
+  state)
+
+(defn- reset-state-syscall
+  [_ctx _state _body]
+  nil)
+
+(defn- syscall-role
+  []
+  {reset-state-subj #'reset-state-syscall
+   set-delivery-mode-subj #'set-delivery-mode-syscall
+   terminate-subj #'terminate-syscall})
 
 (defn- run-actor!
   [actor]
   (let [role (get-actor-role actor)
         feed (get-actor-runner-feed actor)]
     (go-loop [state nil]
-      (when-some [msg (<! feed)]
+      (when-some [[mode msg] (<! feed)]
+        (println ">>" mode msg)
         (let [subj (msg-subj msg)
               body (msg-body msg)
-              h (resolve-handler role subj)
-              new-state (h state body)]
-          (recur new-state))))))
+              target-role (case mode
+                            :normal role
+                            :syscall #'syscall-role)
+              h (resolve-handler target-role subj)
+              ctx {:actor actor}]
+          (recur (h ctx state body)))))))
 
 (defn spawn!
   ([role]
@@ -145,36 +167,40 @@
   ([role props]
    (let [actor (mk-actor role props)]
      (run-actor! actor)
-     (set-actor-mode! actor actor-mode-ctrl)
-     (ctrl! actor (mk-msg init-subj props))
-     (ctrl! actor (mk-msg will-start-subj))
-     (set-actor-mode! actor actor-mode-msg)
+     (set-actor-delivery-mode! actor :oob)
+     (send! actor (mk-msg init-subj props) :delivery-mode :oob)
+     (send! actor (mk-msg will-start-subj) :delivery-mode :oob)
+     (send! actor (mk-msg set-delivery-mode-subj :normal)
+            :delivery-mode :oob :emsg-mode :syscall)
      actor)))
 
 (defn stop!
   [actor]
-  (set-actor-mode! actor actor-mode-ctrl)
-  (ctrl! actor (mk-msg did-stop-subj))
-  (terminate-actor! actor))
+  (set-actor-delivery-mode! actor :oob)
+  (send! actor (mk-msg did-stop-subj) :delivery-mode :oob)
+  (send! actor (mk-msg terminate-subj) :delivery-mode :oob :emsg-mode :syscall))
 
 (defn restart!
   [actor]
-  (set-actor-mode! actor actor-mode-ctrl)
-  (ctrl! actor (mk-msg will-restart-subj))
-  (ctrl! actor (mk-msg did-stop-subj))
-  ;; reset state somehow
-  (ctrl! actor (mk-msg init-subj (get-actor-props actor)))
-  (ctrl! actor (mk-msg will-start-subj))
-  (ctrl! actor (mk-msg did-restart-subj))
-  (set-actor-mode! actor actor-mode-msg))
+  (set-actor-delivery-mode! actor :oob)
+  (send! actor (mk-msg will-restart-subj) :delivery-mode :oob)
+  (send! actor (mk-msg did-stop-subj) :delivery-mode :oob)
+  (send! actor (mk-msg reset-state-subj)
+         :delivery-mode :oob :emsg-mode :syscall)
+  (send! actor (mk-msg init-subj (get-actor-props actor)) :delivery-mode :oob)
+  (send! actor (mk-msg will-start-subj) :delivery-mode :oob)
+  (send! actor (mk-msg did-restart-subj) :delivery-mode :oob)
+  (send! actor (mk-msg set-delivery-mode-subj :normal)
+            :delivery-mode :oob :emsg-mode :syscall))
 
 (comment
   (defn init-h
-    [_state body]
+    [_ctx _state body]
+    (println "init-h" body)
     body)
   
   (defn greet-h
-    [state body]
+    [_ctx state body]
     (println (str (:greeting state) " " body "!"))
     state)
   
@@ -188,6 +214,6 @@
   (stop! greeter-addr)
   (restart! greeter-addr)
 
-  (ns-unmap (find-ns 'eploko.globe3) 'mk-msg-mix!)
+  (ns-unmap (find-ns 'eploko.globe3) '*current-actor*)
   ,)
 
