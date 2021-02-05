@@ -61,7 +61,7 @@
         h (resolve-handler role subj)]
     (h state body)))
 
-(defn- spawn-op
+(defn- start-op
   [actor state]
   (->> state
        (msg-op actor (mk-msg ::init (get-actor-props actor)))
@@ -98,7 +98,7 @@
   ([role props]
    (let [actor (mk-actor role props)]
      (run-actor! actor)
-     (enqueu-op! actor (partial spawn-op actor))
+     (enqueu-op! actor (partial start-op actor))
      actor)))
 
 (defn stop!
