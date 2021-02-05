@@ -3,13 +3,6 @@
    [clojure.core.async :as async :refer [<! >! chan go go-loop]]
    [clojure.string :as str]))
 
-(def did-restart-subj ::did-restart)
-(def did-stop-subj ::did-stop)
-(def init-subj ::init)
-(def proxy-subj ::proxy)
-(def will-restart-subj ::will-restart)
-(def will-start-subj ::will-start)
-
 (def mailbox-size 10)
 
 (defn mk-msg
@@ -53,7 +46,7 @@
   [role subj]
   (let [handlers (role)]
     (or (get handlers subj)
-        (get handlers proxy-subj)
+        (get handlers ::proxy)
         #'unknown-msg-h)))
 
 (defn enqueu-op!
@@ -71,33 +64,33 @@
 (defn- spawn-op
   [actor state]
   (->> state
-       (msg-op actor (mk-msg init-subj (get-actor-props actor)))
-       (msg-op actor (mk-msg will-start-subj))))
+       (msg-op actor (mk-msg ::init (get-actor-props actor)))
+       (msg-op actor (mk-msg ::will-start))))
 
 (defn- stop-op
   [actor state]
-  (msg-op actor (mk-msg did-stop-subj) state)
+  (msg-op actor (mk-msg ::did-stop) state)
   (async/close! (get-actor-port actor)))
 
 (defn- restart-op
   [actor state]
   (->> state
-       (msg-op actor (mk-msg will-restart-subj))
-       (msg-op actor (mk-msg did-stop-subj)))
+       (msg-op actor (mk-msg ::will-restart))
+       (msg-op actor (mk-msg ::did-stop)))
   (->> nil
-       (msg-op actor (mk-msg init-subj (get-actor-props actor)))
-       (msg-op actor (mk-msg will-start-subj))
-       (msg-op actor (mk-msg did-restart-subj))))
-
-(defn send!
-  [actor msg]
-  (enqueu-op! actor (partial msg-op actor msg)))
+       (msg-op actor (mk-msg ::init (get-actor-props actor)))
+       (msg-op actor (mk-msg ::will-start))
+       (msg-op actor (mk-msg ::did-restart))))
 
 (defn- run-actor!
   [actor]
   (go-loop [state nil]
     (when-some [op-f (<! (get-actor-port actor))]
       (recur (op-f state)))))
+
+(defn send!
+  [actor msg]
+  (enqueu-op! actor (partial msg-op actor msg)))
 
 (defn spawn!
   ([role]
@@ -119,7 +112,6 @@
 (comment
   (defn init-h
     [_state body]
-    (println "init-h" body)
     body)
   
   (defn greet-h
@@ -129,7 +121,7 @@
   
   (defn greeter
     []
-    {init-subj #'init-h
+    {::init #'init-h
      :greet #'greet-h})
 
   (def greeter-addr (spawn! #'greeter {:greeting "Hej"}))
