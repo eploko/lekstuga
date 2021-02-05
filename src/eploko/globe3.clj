@@ -68,6 +68,27 @@
         h (resolve-handler role subj)]
     (h state body)))
 
+(defn- spawn-op
+  [actor state]
+  (->> state
+       (msg-op actor (mk-msg init-subj (get-actor-props actor)))
+       (msg-op actor (mk-msg will-start-subj))))
+
+(defn- stop-op
+  [actor state]
+  (msg-op actor (mk-msg did-stop-subj) state)
+  (async/close! (get-actor-port actor)))
+
+(defn- restart-op
+  [actor state]
+  (->> state
+       (msg-op actor (mk-msg will-restart-subj))
+       (msg-op actor (mk-msg did-stop-subj)))
+  (->> nil
+       (msg-op actor (mk-msg init-subj (get-actor-props actor)))
+       (msg-op actor (mk-msg will-start-subj))
+       (msg-op actor (mk-msg did-restart-subj))))
+
 (defn send!
   [actor msg]
   (enqueu-op! actor (partial msg-op actor msg)))
@@ -84,31 +105,16 @@
   ([role props]
    (let [actor (mk-actor role props)]
      (run-actor! actor)
-     (enqueu-op! actor
-                 (fn [state]
-                   (->> state
-                        (msg-op actor (mk-msg init-subj props))
-                        (msg-op actor (mk-msg will-start-subj)))))
+     (enqueu-op! actor (partial spawn-op actor))
      actor)))
 
 (defn stop!
   [actor]
-  (enqueu-op! actor
-              (fn [state]
-                (msg-op actor (mk-msg did-stop-subj) state)
-                (async/close! (get-actor-port actor)))))
+  (enqueu-op! actor (partial stop-op actor)))
 
 (defn restart!
   [actor]
-  (enqueu-op! actor
-              (fn [state]
-                (->> state
-                     (msg-op actor (mk-msg will-restart-subj))
-                     (msg-op actor (mk-msg did-stop-subj)))
-                (->> nil
-                     (msg-op actor (mk-msg init-subj (get-actor-props actor)))
-                     (msg-op actor (mk-msg will-start-subj))
-                     (msg-op actor (mk-msg did-restart-subj))))))
+  (enqueu-op! actor (partial restart-op actor)))
 
 (comment
   (defn init-h
