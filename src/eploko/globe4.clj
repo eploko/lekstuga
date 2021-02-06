@@ -4,17 +4,17 @@
 
 (defonce ^:private !addrs (atom {}))
 
-(defn addr!
+(defn- addr!
   [addr port]
   (if port
     (swap! !addrs assoc addr port)
     (swap! !addrs dissoc addr)))
 
-(defn join-addr
+(defn- join-addr
   [addr child]
   (str addr "/" child))
 
-(defn resolve-addr
+(defn- resolve-addr
   [addr]
   (get @!addrs addr))
 
@@ -71,7 +71,8 @@
 (defn- mk-ctx
   [self from]
   {:self self
-   :from from})
+   :from from
+   :next (atom nil)})
 
 (defn ctx-self
   [ctx]
@@ -81,67 +82,107 @@
   [ctx]
   (:from ctx))
 
+(defn- ctx-next
+  ([ctx]
+   (deref (:next ctx)))
+  ([ctx v]
+   (reset! (:next ctx) v)))
+
+(defn ctx-stop
+  [ctx]
+  (ctx-next ctx ::stopped))
+
+(defn- actor-stop-h
+  [ctx state _subj _body]
+  (ctx-stop ctx)
+  state)
+
+(def ^:private internal-handlers
+  {::stop #'actor-stop-h})
+
+(defn- find-handler
+  [subj handlers not-found]
+  (get handlers subj not-found))
+
 (defn- <stopped-behavior
-  [self port _constructor _h]
+  [self port _role _constructor _state]
   (go
     (async/close! port)
     (println "Actor stopped:" self)
     nil))
 
 (defn- <default-behavior
-  [self port constructor inst]
-  (let [{:keys [cleanup handle]
-         :or {cleanup (fn [])}}
-        inst]
+  [self port role constructor state]
+  (let [cleanup (:cleanup role)]
     (go 
       (when-some [msg (<! port)]
         (try
-          (let [ctx (mk-ctx self (msg-from msg))]  
-            (case (handle ctx (msg-subj msg) (msg-body msg))
+          (let [ctx (mk-ctx self (msg-from msg))
+                subj (msg-subj msg)
+                handler (find-handler subj internal-handlers (:handle role))
+                new-state (handler ctx state subj (msg-body msg))]  
+            (case (ctx-next ctx)
               ::stopped (do (addr! self nil)
-                            [<stopped-behavior inst])
-              [<default-behavior inst]))
+                            [<stopped-behavior new-state])
+              [<default-behavior new-state]))
           (catch Exception e
             (println "exception:" e "actor will restart:" self)
-            (cleanup)
+            (cleanup state)
             [<default-behavior (constructor)]))))))
 
+(def ^:private default-role
+  {:init (fn [_props])
+   :cleanup (fn [_state])
+   :handle (fn [_ctx _subj _body])})
+
 (defn actor
-  [init-f]
-  (fn [props]
-    (fn [self]
-      (let [port (chan 10)
-            constructor (partial init-f props)]
-        (go-loop [behavior <default-behavior
-                  inst (constructor)]
-          (when-some [[next-behavior next-inst] (<! (behavior self port constructor inst))]
-            (recur next-behavior next-inst)))
-        port))))
+  [& {:as role}]
+  (let [realized-role (merge default-role role)]
+    (fn [props]
+      (fn [self]
+        (let [port (chan 10)
+              init-f (:init realized-role)
+              constructor (partial init-f self props)]
+          (go-loop [behavior <default-behavior
+                    state (constructor)]
+            (when-some [[next-behavior next-state]
+                        (<! (behavior self port realized-role constructor state))]
+              (recur next-behavior next-state)))
+          port)))))
 
 (defn reply!
   [ctx a]
   (send! (msg (ctx-self ctx) (ctx-from ctx) ::reply a)))
 
 (comment
+  ;; TODO: Spawn system
+  ;; TODO: Spawn children in an actor
+  ;; TODO: Make sure children are stopped when the parent is stopped or restarted
+  (defn greeter-init
+    [_self props]
+    (println "Initializing...")
+    {:x 0
+     :greeting props})
+
+  (defn greeter-cleanup
+    [_state]
+    (println "I will restart."))
+  
+  (defn greeter-handle
+    [ctx state subj body]
+    (case subj
+      :wassup? (do (reply! ctx "Wassup!") state)
+      :greet (do (println (str (:greeting state) " " body "!")) state)
+      :inc (update state :x inc)
+      :state? (do (reply! ctx state) state)
+      :fail! (throw (ex-info "Woohoo!" {}))
+      state))
+  
   (def greeter
     (actor
-     (fn [props]
-       (println "Initializing...")
-       (let [greeting props
-             state (atom {:x 0})]
-         {:cleanup
-          (fn []
-            (println "I will restart."))
-          :handle
-          (fn [ctx subj body]
-            (case subj
-              ::stop ::stopped
-              :wassup? (reply! ctx "Wassup!")
-              :greet (println (str greeting " " body "!"))
-              :inc (swap! state update :x inc)
-              :state? (reply! ctx @state)
-              :fail! (throw (ex-info "Woohoo!" {}))
-              nil))}))))
+     :init #'greeter-init
+     :cleanup #'greeter-cleanup
+     :handle #'greeter-handle))
 
   (def greeter-addr (spawn! nil "greeter" (greeter "Hello")))
   (send! (msg greeter-addr :greet "Andrey"))
