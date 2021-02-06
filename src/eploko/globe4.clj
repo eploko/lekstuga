@@ -81,18 +81,41 @@
   [ctx]
   (:from ctx))
 
+(defn- <stopped-behavior
+  [self port _constructor _h]
+  (go
+    (async/close! port)
+    (println "Actor stopped:" self)
+    nil))
+
+(defn- <default-behavior
+  [self port constructor inst]
+  (let [{:keys [cleanup handle]
+         :or {cleanup (fn [])}}
+        inst]
+    (go 
+      (when-some [msg (<! port)]
+        (try
+          (let [ctx (mk-ctx self (msg-from msg))]  
+            (case (handle ctx (msg-subj msg) (msg-body msg))
+              ::stopped (do (addr! self nil)
+                            [<stopped-behavior inst])
+              [<default-behavior inst]))
+          (catch Exception e
+            (println "exception:" e "actor will restart:" self)
+            (cleanup)
+            [<default-behavior (constructor)]))))))
+
 (defn actor
   [init-f]
   (fn [props]
     (fn [self]
-      (let [port (chan 10)]
-        (go-loop [h (init-f props)]
-          (when-some [msg (<! port)]
-            (let [ctx (mk-ctx self (msg-from msg))]
-              (case (h ctx (msg-subj msg) (msg-body msg))
-                ::stopped (addr! self nil)
-                true)
-              (recur h))))
+      (let [port (chan 10)
+            constructor (partial init-f props)]
+        (go-loop [behavior <default-behavior
+                  inst (constructor)]
+          (when-some [[next-behavior next-inst] (<! (behavior self port constructor inst))]
+            (recur next-behavior next-inst)))
         port))))
 
 (defn reply!
@@ -103,19 +126,32 @@
   (def greeter
     (actor
      (fn [props]
-       (let [greeting props]
-         (fn [ctx subj body]
-           (case subj
-             ::stop ::stopped
-             :wassup? (reply! ctx "Wassup!")
-             :greet (println (str greeting " " body "!"))
-             true))))))
+       (println "Initializing...")
+       (let [greeting props
+             state (atom {:x 0})]
+         {:cleanup
+          (fn []
+            (println "I will restart."))
+          :handle
+          (fn [ctx subj body]
+            (case subj
+              ::stop ::stopped
+              :wassup? (reply! ctx "Wassup!")
+              :greet (println (str greeting " " body "!"))
+              :inc (swap! state update :x inc)
+              :state? (reply! ctx @state)
+              :fail! (throw (ex-info "Woohoo!" {}))
+              nil))}))))
 
   (def greeter-addr (spawn! nil "greeter" (greeter "Hello")))
   (send! (msg greeter-addr :greet "Andrey"))
+  (send! (msg greeter-addr :inc nil))
+  (go 
+    (println "state:" (<! (<query! greeter-addr :state?))))
   (go 
     (println "response:" (<! (<query! greeter-addr :wassup?))))
   (send! (msg greeter-addr ::stop nil))
+  (send! (msg greeter-addr :fail! nil))
 
   (tap> @!addrs)
   (go (>! (resolve-addr "query") (msg "query" nil "yo")))
