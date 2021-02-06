@@ -4,11 +4,13 @@
 
 (defonce ^:private !addrs (atom {}))
 
-(defn- addr!
+(defn- reg-addr!
   [addr port]
-  (if port
-    (swap! !addrs assoc addr port)
-    (swap! !addrs dissoc addr)))
+  (swap! !addrs assoc addr port))
+
+(defn- unreg-addr!
+  [addr]
+  (swap! !addrs dissoc addr))
 
 (defn- join-addr
   [addr child]
@@ -54,18 +56,17 @@
    (<query! to subj nil))
   ([to subj body]
    (let [q-addr "query"
-         in (chan)
-         out (go (let [reply-msg (<! in)]
-                   (addr! q-addr nil)
-                   (msg-body reply-msg)))]
-     (addr! q-addr in)
+         in (chan)]
+     (reg-addr! q-addr in)
      (send! (msg q-addr to subj body))
-     out)))
+     (go (let [reply-msg (<! in)]
+           (unreg-addr! q-addr)
+           (msg-body reply-msg))))))
 
 (defn spawn!
   [parent-addr actor-name actor-fn]
   (let [addr (join-addr parent-addr actor-name)]
-    (addr! addr (actor-fn addr))
+    (reg-addr! addr (actor-fn addr))
     addr))
 
 (defn- mk-ctx
@@ -105,11 +106,13 @@
   (get handlers subj not-found))
 
 (defn- <stopped-behavior
-  [self port _role _constructor _state]
-  (go
-    (async/close! port)
-    (println "Actor stopped:" self)
-    nil))
+  [self port role _constructor state]
+  (let [cleanup (:cleanup role)]
+    (go
+      (async/close! port)
+      (cleanup state)
+      (println "Actor stopped:" self)
+      nil)))
 
 (defn- <default-behavior
   [self port role constructor state]
@@ -122,7 +125,7 @@
                 handler (find-handler subj internal-handlers (:handle role))
                 new-state (handler ctx state subj (msg-body msg))]  
             (case (ctx-next ctx)
-              ::stopped (do (addr! self nil)
+              ::stopped (do (unreg-addr! self)
                             [<stopped-behavior new-state])
               [<default-behavior new-state]))
           (catch Exception e
@@ -158,6 +161,7 @@
   ;; TODO: Spawn system
   ;; TODO: Spawn children in an actor
   ;; TODO: Make sure children are stopped when the parent is stopped or restarted
+  ;; TODO: Let supervisor decide what to do with a failed actor
   (defn greeter-init
     [_self props]
     (println "Initializing...")
@@ -196,7 +200,7 @@
 
   (tap> @!addrs)
   (go (>! (resolve-addr "query") (msg "query" nil "yo")))
-  (addr! "query" nil)
+  (unreg-addr! "query")
 
-  (ns-unmap (find-ns 'eploko.globe4) 'stop!)
+  (ns-unmap (find-ns 'eploko.globe4) 'addr!)
   ,)
