@@ -66,10 +66,23 @@
   [msg]
   (:body msg))
 
+(defprotocol MessageTarget
+  (receive! [this msg] "Passes the message `msg` to the underlying mailbox.")
+  (addr [this] "Returns its address."))
+
+(deftype ActorRef [addr port]
+  MessageTarget
+  (receive! [this msg] (go (>! port msg)))
+  (addr [this] addr))
+
+(defn- actor-ref
+  [addr port]
+  (ActorRef. addr port))
+
 (defn send!
   [msg]
-  (if-let [port (resolve-addr (msg-to msg))]
-    (go (>! port msg))
+  (if-let [^MessageTarget aref (resolve-addr (msg-to msg))]
+    (receive! aref msg)
     (println "No such address:" (msg-to msg) "Message dropped:" msg)))
 
 (defn <query!
@@ -86,8 +99,9 @@
 
 (defn spawn!
   [parent-addr actor-name actor-fn]
-  (let [addr (join-addr parent-addr actor-name)]
-    (reg-addr! addr (actor-fn addr))
+  (let [addr (join-addr parent-addr actor-name)
+        aref (actor-ref addr (actor-fn addr))]
+    (reg-addr! addr aref)
     addr))
 
 (defn- mk-ctx
