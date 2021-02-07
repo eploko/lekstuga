@@ -23,23 +23,9 @@
   []
   (UnboundBuffer. (atom [])))
 
-(defonce ^:private !addrs (atom {}))
-
-(defn- reg-addr!
-  [addr port]
-  (swap! !addrs assoc addr port))
-
-(defn- unreg-addr!
-  [addr]
-  (swap! !addrs dissoc addr))
-
 (defn- join-addr
   [addr child]
   (str addr "/" child))
-
-(defn- resolve-addr
-  [addr]
-  (get @!addrs addr))
 
 (defn msg
   ([to subj body]
@@ -67,13 +53,15 @@
   (:body msg))
 
 (defprotocol MessageTarget
-  (receive! [this msg] "Passes the message `msg` to the underlying mailbox.")
-  (addr [this] "Returns its address."))
+  (tell! [this msg] "Passes the message `msg` to the underlying mailbox.")
+  (addr [this] "Returns its address.")
+  (port [this] "Returns its port."))
 
 (deftype ActorRef [addr port]
   MessageTarget
-  (receive! [this msg] (go (>! port msg)))
-  (addr [this] addr))
+  (tell! [this msg] (go (>! port msg)))
+  (addr [this] addr)
+  (port [this] port))
 
 (defn- actor-ref
   [addr port]
@@ -82,7 +70,7 @@
 (defn send!
   [msg]
   (if-let [^MessageTarget aref (resolve-addr (msg-to msg))]
-    (receive! aref msg)
+    (tell! aref msg)
     (println "No such address:" (msg-to msg) "Message dropped:" msg)))
 
 (defn <query!
@@ -97,133 +85,130 @@
            (unreg-addr! q-addr)
            (msg-body reply-msg))))))
 
-(defn spawn!
-  [parent-addr actor-name actor-fn]
-  (let [addr (join-addr parent-addr actor-name)
-        aref (actor-ref addr (actor-fn addr))]
-    (reg-addr! addr aref)
-    addr))
+(defprotocol RefProvider
+  (self [this] "Returns own actor ref.")
+  (from [this] "Returns the addr of the sender."))
 
-(defn- mk-ctx
-  [self from]
-  {:self self
-   :from from
-   :next (atom nil)})
+(defprotocol ReplySender
+  (reply! [this a] "Sends the reply `a`."))
 
-(defn ctx-self
-  [ctx]
-  (:self ctx))
+(defprotocol Spawner
+  (spawn! [this actor-name constructor props] "Spawns a new actor."))
 
-(defn ctx-from
-  [ctx]
-  (:from ctx))
+(deftype ActorContext [^ActorRef self from]
+  RefProvider
+  (self [this] self)
+  (from [this] from)
 
-(defn- ctx-next
-  ([ctx]
-   (deref (:next ctx)))
-  ([ctx v]
-   (reset! (:next ctx) v)))
+  ReplySender
+  (reply! [this a]
+    (send! (msg self from ::reply a))))
 
-(defn ctx-stop
-  [ctx]
-  (ctx-next ctx ::stopped))
+(defn actor-context
+  [^ActorRef self from]
+  (ActorContext. self from))
 
-(defn- actor-stop-h
-  [ctx state _subj _body]
-  (ctx-stop ctx)
-  state)
-
-(def ^:private internal-handlers
-  {::stop #'actor-stop-h})
-
-(defn- find-handler
-  [subj handlers not-found]
-  (get handlers subj not-found))
+(defprotocol Role
+  (cleanup [this] "Saves state if needed.")
+  (handle [this ^ActorContext ctx subj body] "Handles an incoming message."))
 
 (defn- <stopped-behavior
-  [self port role _constructor state]
-  (let [cleanup (:cleanup role)]
-    (go
-      (async/close! port)
-      (cleanup state)
-      (println "Actor stopped:" self)
-      nil)))
+  [^ActorRef self actor-inst _constructor]
+  (go
+    (async/close! (port self))
+    (cleanup actor-inst)
+    (println "Actor stopped:" self)
+    nil))
 
 (defn- <default-behavior
-  [self port role constructor state]
-  (let [cleanup (:cleanup role)]
-    (go 
-      (when-some [msg (<! port)]
-        (try
-          (let [ctx (mk-ctx self (msg-from msg))
-                subj (msg-subj msg)
-                handler (find-handler subj internal-handlers (:handle role))
-                new-state (handler ctx state subj (msg-body msg))]  
-            (case (ctx-next ctx)
-              ::stopped (do (unreg-addr! self)
-                            [<stopped-behavior new-state])
-              [<default-behavior new-state]))
-          (catch Exception e
-            (println "exception:" e "actor will restart:" self)
-            (cleanup state)
-            [<default-behavior (constructor)]))))))
+  [^ActorRef self actor-inst constructor]
+  (go 
+    (when-some [msg (<! (port self))]
+      (try
+        (let [ctx (actor-context self (msg-from msg))
+              subj (msg-subj msg)]
+          (case (handle actor-inst ctx subj (msg-body msg))
+            ::stopped (do #_(unreg-addr! self)
+                          [<stopped-behavior actor-inst])
+            [<default-behavior actor-inst]))
+        (catch Exception e
+          (println "exception:" e "actor will restart:" self)
+          (cleanup actor-inst)
+          [<default-behavior (constructor)])))))
 
-(def ^:private default-role
-  {:init (fn [_props])
-   :cleanup (fn [_state])
-   :handle (fn [_ctx _subj _body])})
+(defprotocol MessageProcessor
+  (run-loop! [this] "Starts processing messages."))
+
+(deftype Actor [^ActorRef self constructor]
+  MessageProcessor
+  (run-loop! [this]
+    (go-loop [behavior <default-behavior
+              actor-inst (constructor)]
+      (when-some [[next-behavior next-inst]
+                  (<! (behavior self actor-inst constructor))]
+        (recur next-behavior next-inst)))))
 
 (defn actor
-  [& {:as role}]
-  (let [realized-role (merge default-role role)]
-    (fn [props]
-      (fn [self]
-        (let [port (chan (unbound-buf))
-              init-f (:init realized-role)
-              constructor (partial init-f self props)]
-          (go-loop [behavior <default-behavior
-                    state (constructor)]
-            (when-some [[next-behavior next-state]
-                        (<! (behavior self port realized-role constructor state))]
-              (recur next-behavior next-state)))
-          port)))))
+  [^ActorRef self constructor]
+  (Actor. self constructor))
 
-(defn reply!
-  [ctx a]
-  (send! (msg (ctx-self ctx) (ctx-from ctx) ::reply a)))
+(defn spawn!
+  [^ActorRef parent-ref actor-name constructor props]
+  (let [addr (join-addr (addr parent-ref) actor-name)
+        port (chan (unbound-buf))
+        self (actor-ref addr port)]
+    (run-loop! (actor self (partial constructor props)))
+    self))
+
+(def ^:const ^:private ROOT-PATH "/")
+
+(deftype ActorSystem []
+  Spawner
+  (spawn! [this actor-name constructor props]
+    (let [addr (str ROOT-PATH actor-name)
+          port (chan (unbound-buf))
+          aref (actor-ref addr port)]
+      (run-loop! (actor aref (partial constructor props)))
+      aref)))
+
+(defn- system
+  []
+  (ActorSystem.))
+
+(defn start-system!
+  []
+  (let [addr "/"
+        port (chan (unbound-buf))
+        self (actor-ref addr port)]
+    (actor self system)
+    self))
 
 (comment
   ;; TODO: Spawn system
   ;; TODO: Spawn children in an actor
   ;; TODO: Make sure children are stopped when the parent is stopped or restarted
   ;; TODO: Let supervisor decide what to do with a failed actor
-  (defn greeter-init
-    [_self props]
-    (println "Initializing...")
-    {:x 0
-     :greeting props})
+  (deftype Greeter [greeting !x]
+    Role
+    (cleanup [this]
+      (println "I will restart."))
+    (handle [this ctx subj body]
+      (case subj
+        ::stop ::stopped
+        :wassup? (reply! ctx "Wassup!")
+        :greet (println (str greeting " " body "!"))
+        :inc (swap! !x inc)
+        :state? (reply! ctx {:greeting greeting :x @!x})
+        :fail! (throw (ex-info "Woohoo!" {}))
+        nil)))
 
-  (defn greeter-cleanup
-    [_state]
-    (println "I will restart."))
-  
-  (defn greeter-handle
-    [ctx state subj body]
-    (case subj
-      :wassup? (do (reply! ctx "Wassup!") state)
-      :greet (do (println (str (:greeting state) " " body "!")) state)
-      :inc (update state :x inc)
-      :state? (do (reply! ctx state) state)
-      :fail! (throw (ex-info "Woohoo!" {}))
-      state))
-  
-  (def greeter
-    (actor
-     :init #'greeter-init
-     :cleanup #'greeter-cleanup
-     :handle #'greeter-handle))
+  (defn greeter
+    [greeting]
+    (Greeter. greeting (atom 0)))
 
-  (def greeter-addr (spawn! nil "greeter" (greeter "Hello")))
+  (def as (start-system!))
+  
+  (def greeter-ref (spawn! as "greeter" greeter "Hello"))
   (send! (msg greeter-addr :greet "Andrey"))
   (send! (msg greeter-addr :inc nil))
   (go 
@@ -237,5 +222,5 @@
   (go (>! (resolve-addr "query") (msg "query" nil "yo")))
   (unreg-addr! "query")
 
-  (ns-unmap (find-ns 'eploko.globe4) 'addr!)
+  (ns-unmap (find-ns 'eploko.globe4) 'reply!)
   ,)
