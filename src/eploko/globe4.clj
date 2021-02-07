@@ -1,6 +1,27 @@
 (ns eploko.globe4
   (:require
-   [clojure.core.async :as async :refer [<! >! chan go go-loop]]))
+   [clojure.core.async :as async :refer [<! >! chan go go-loop]]
+   [clojure.core.async.impl.protocols :as async-protocols]))
+
+(deftype UnboundBuffer [!buf]
+  async-protocols/Buffer
+  (full? [this]
+    false)
+  (remove! [this]
+    (ffirst (swap-vals! !buf pop)))
+  (add!* [this itm]
+    (swap! !buf conj itm))
+  (close-buf! [this] (reset! !buf []))
+  clojure.lang.Counted
+  (count [this]
+    (count @!buf))
+  clojure.lang.IDeref
+  (deref [this]
+    @!buf))
+
+(defn unbound-buf
+  []
+  (UnboundBuffer. (atom [])))
 
 (defonce ^:private !addrs (atom {}))
 
@@ -143,7 +164,7 @@
   (let [realized-role (merge default-role role)]
     (fn [props]
       (fn [self]
-        (let [port (chan 10)
+        (let [port (chan (unbound-buf))
               init-f (:init realized-role)
               constructor (partial init-f self props)]
           (go-loop [behavior <default-behavior
