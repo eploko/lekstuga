@@ -65,24 +65,38 @@
   []
   (ChildrenRegistry. (atom {})))
 
+(defprotocol Spawner
+  (spawn! [this actor-name role-f] "Spawns a new child. Returns the child's actor ref."))
+
 (defprotocol ActorParent
-  (spawn! [this actor-name role-f] "Spawns a new child. Returns the child's actor ref.")
   (remove-child! [this actor-name] "Discards the child."))
 
 (defprotocol SelfProvider
   (self [this] "Returns the self ref."))
 
 (defprotocol Role
+  (init [this ctx] "Bootstraps the role.")
   (handle [this ctx msg] "Handles the message.")
   (cleanup [this] "Cleans up resources, saves the state."))
 
-(deftype RoleContext [self]
+(deftype RoleContext [actor]
   SelfProvider
-  (self [this] self))
+  (self [this] (self actor))
+
+  Spawner
+  (spawn! [this actor-name role-f]
+    (println "In role context spawn!...")
+    (spawn! actor actor-name role-f)))
 
 (defn- mk-role-context
-  [self]
-  (RoleContext. self))
+  [actor]
+  (RoleContext. actor))
+
+(defn- init-role
+  [role-f actor]
+  (let [role-inst (role-f)]
+    (init role-inst (mk-role-context actor))
+    role-inst))
 
 (defn- <stopped-behavior
   [actor role-inst _role-f]
@@ -107,26 +121,28 @@
                            [<default-behavior role-inst])
             [<default-behavior role-inst])
           (try
-            (let [ctx (mk-role-context self-ref)]
+            (let [ctx (mk-role-context actor)]
               (case (handle role-inst ctx msg)
                 ::stopped [<stopped-behavior role-inst]
                 [<default-behavior role-inst]))
             (catch Exception e
               (println "exception:" e "actor will restart:" actor)
               (cleanup role-inst)
-              [<default-behavior (role-f)])))))))
+              [<default-behavior (init-role role-f actor)])))))))
 
 (deftype Actor [parent self role-f ^ChildrenRegistry children]
   SelfProvider
   (self [this] self)
   
-  ActorParent
+  Spawner
   (spawn! [this actor-name role-f]
     (let [new-actor-ref (mk-local-actor-ref actor-name)
           new-actor (Actor. self new-actor-ref role-f (mk-children-registry))]
       (reg! children actor-name new-actor)
       (run-loop! new-actor)
       new-actor-ref))
+
+  ActorParent
   (remove-child! [this actor-name]
     (println "Removing child:" actor-name)
     (unreg! children actor-name))
@@ -134,7 +150,7 @@
   MessageProcessor
   (run-loop! [this]
     (go-loop [behavior <default-behavior
-              role-inst (role-f)]
+              role-inst (init-role role-f this)]
       (let [result (<! (behavior this role-inst role-f))]
         (cond
           (= ::terminate-run-loop result)
@@ -151,8 +167,22 @@
     (run-loop! new-actor)
     new-actor))
 
+(deftype UserSubsystem []
+  Role
+  (init [this ctx]
+    (println "In user subsystem init..."))
+  (handle [this ctx msg])
+  (cleanup [this]))
+
+(defn- mk-user-subsystem
+  []
+  (UserSubsystem.))
+
 (deftype ActorSystem []
   Role
+  (init [this ctx]
+    (println "In actor system init...")
+    (spawn! ctx "user" mk-user-subsystem))
   (handle [this ctx msg])
   (cleanup [this]))
 
@@ -167,6 +197,8 @@
 (comment
   (deftype Greeter [greeting !x]
     Role
+    (init [this ctx]
+      (println "In greeter init..."))
     (handle [this ctx msg]
       (case (first msg)
         :greet (println (str greeting " " (second msg) "!"))
