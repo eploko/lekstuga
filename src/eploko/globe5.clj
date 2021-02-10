@@ -32,7 +32,7 @@
   (reg-death! [this] "Notifies watchers the actor is dead."))
 
 (defprotocol MessageProcessor
-  (run-loop! [this] "Processes messages from the mailbox."))
+  (run-loop! [this role-f ctx] "Processes messages from the mailbox."))
 
 (defprotocol MessageFeed
   (normal-port [this] "Returns the normal port.")
@@ -191,12 +191,12 @@
 
 (declare mk-actor)
 
-(deftype Actor [parent self-ref role-f ctx]
+(deftype Actor [parent self-ref]
   SelfProvider
   (self [this] self-ref)
 
   MessageProcessor
-  (run-loop! [this]
+  (run-loop! [this role-f ctx]
     (go-loop [behavior <default-behavior
               role-inst (init-role role-f ctx)]
       (let [result
@@ -213,8 +213,9 @@
 
 (defn- mk-actor
   [parent self-ref role-f]
-  (run-loop! (Actor. parent self-ref role-f
-                     (mk-actor-context self-ref)))
+  (run-loop! (Actor. parent self-ref)
+             role-f
+             (mk-actor-context self-ref))
   self-ref)
 
 (def ^:private user-subsystem-default-state
