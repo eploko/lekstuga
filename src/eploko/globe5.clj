@@ -26,7 +26,10 @@
 (defprotocol ActorRef
   (get-actor-name [this] "Returns the name of the underlying actor.")
   (tell! [this msg] "Sends the message to the underlying actor.")
-  (ctrl! [this msg] "Sends the ctrl message to the underlying actor."))
+  (ctrl! [this msg] "Sends the ctrl message to the underlying actor.")
+  (reg-watcher! [this actor-ref] "Registers a watcher.")
+  (unreg-watcher! [this actor-ref] "Unregisters a watcher.")
+  (reg-death! [this] "Notifies watchers the actor is dead."))
 
 (defprotocol MessageProcessor
   (run-loop! [this] "Processes messages from the mailbox."))
@@ -35,11 +38,21 @@
   (normal-port [this] "Returns the normal port.")
   (ctrl-port [this] "Returns the ctrl port."))
 
-(deftype LocalActorRef [actor-name normal-port ctrl-port]
+(deftype LocalActorRef [actor-name normal-port ctrl-port !dead? !watchers]
   ActorRef
   (get-actor-name [this] actor-name)
   (tell! [this msg] (go (>! normal-port msg)))
   (ctrl! [this msg] (go (>! ctrl-port msg)))
+  (reg-watcher! [this watcher]
+    (if @!dead?
+      (tell! watcher [::terminated this])
+      (swap! !watchers conj watcher)))
+  (unreg-watcher! [this watcher]
+    (swap! !watchers disj watcher))
+  (reg-death! [this]
+    (reset! !dead? true)
+    (doseq [watcher (first (swap-vals! !watchers #{}))]
+      (tell! watcher [::terminated this])))
 
   MessageFeed
   (normal-port [this] normal-port)
@@ -47,7 +60,9 @@
 
 (defn mk-local-actor-ref
   [actor-name]
-  (LocalActorRef. actor-name (chan (unbound-buf)) (chan (unbound-buf))))
+  (LocalActorRef. actor-name
+                  (chan (unbound-buf)) (chan (unbound-buf))
+                  (atom false) (atom #{})))
 
 (defprotocol Registry
   (reg! [this k v] "Registers the value under the key. Returns `v`.")
@@ -68,6 +83,10 @@
 (defprotocol Spawner
   (spawn! [this actor-name role-f] "Spawns a new child. Returns the child's actor ref."))
 
+(defprotocol ActorRefWatcher
+  (watch [this target-ref] "Waits until the target-ref's actor terminates and notifies about it.")
+  (unwatch [this target-ref] "Deregisters interest in watching."))
+
 (defprotocol ActorParent
   (remove-child! [this actor-name] "Discards the child."))
 
@@ -77,7 +96,7 @@
 (defprotocol Role
   (init [this ctx] "Bootstraps the role.")
   (handle [this ctx msg] "Handles the message.")
-  (cleanup [this] "Cleans up resources, saves the state."))
+  (cleanup [this ctx] "Cleans up resources, saves the state."))
 
 (deftype RoleContext [actor]
   SelfProvider
@@ -86,7 +105,13 @@
   Spawner
   (spawn! [this actor-name role-f]
     (println "In role context spawn!...")
-    (spawn! actor actor-name role-f)))
+    (spawn! actor actor-name role-f))
+
+  ActorRefWatcher
+  (watch [this target-ref]
+    (reg-watcher! target-ref (self this)))
+  (unwatch [this target-ref]
+    (unreg-watcher! target-ref (self this))))
 
 (defn- mk-role-context
   [actor]
@@ -103,7 +128,7 @@
   (go
     (async/close! (normal-port (self actor)))
     (async/close! (ctrl-port (self actor)))
-    (cleanup role-inst)
+    (cleanup role-inst (mk-role-context actor))
     (println "Actor stopped:" (self actor))
     ::terminate-run-loop))
 
@@ -120,15 +145,15 @@
                            (remove-child! actor (get-actor-name (second msg)))
                            [<default-behavior role-inst])
             [<default-behavior role-inst])
-          (try
-            (let [ctx (mk-role-context actor)]
+          (let [ctx (mk-role-context actor)]
+            (try
               (case (handle role-inst ctx msg)
                 ::stopped [<stopped-behavior role-inst]
-                [<default-behavior role-inst]))
-            (catch Exception e
-              (println "exception:" e "actor will restart:" actor)
-              (cleanup role-inst)
-              [<default-behavior (init-role role-f actor)])))))))
+                [<default-behavior role-inst])
+              (catch Exception e
+                (println "exception:" e "actor will restart:" actor)
+                (cleanup role-inst ctx)
+                [<default-behavior (init-role role-f actor)]))))))))
 
 (deftype Actor [parent self role-f ^ChildrenRegistry children]
   SelfProvider
@@ -156,7 +181,8 @@
           (= ::terminate-run-loop result)
           (do
             (println "Run loop terminated.")
-            (ctrl! parent [::terminated self]))
+            (ctrl! parent [::terminated self])
+            (reg-death! self))
           (vector? result)
           (recur (first result) (second result))
           :else (throw (ex-info "Invalid behavior result!" {:result result})))))))
@@ -167,31 +193,62 @@
     (run-loop! new-actor)
     new-actor))
 
-(deftype UserSubsystem [actor-name role-f result-ch]
+(def ^:private user-subsystem-default-state
+  {:main-actor-ref nil})
+
+(deftype UserSubsystem [actor-name role-f result-ch !state]
   Role
   (init [this ctx]
     (println "In user subsystem init...")
-    (go (>! result-ch (spawn! ctx actor-name role-f))
-        (async/close! result-ch)))
-  (handle [this ctx msg])
-  (cleanup [this]))
+    (let [main-actor-ref (spawn! ctx actor-name role-f)]
+      (go (>! result-ch main-actor-ref)
+          (async/close! result-ch))
+      (swap! !state assoc :main-actor-ref main-actor-ref)
+      (watch ctx main-actor-ref)))
+  (handle [this ctx msg]
+    (case (first msg)
+      ::terminated
+      (when (= (second msg) (:main-actor-ref @!state))
+        (println "Main actor is dead. Stopping the user guard...")
+        ::stopped)
+      nil))
+  (cleanup [this ctx]
+    (when-some [main-actor-ref (:main-actor-ref @!state)]
+      (unwatch ctx main-actor-ref))
+    (reset! !state user-subsystem-default-state)))
 
 (defn- mk-user-subsystem
   [actor-name role-f result-ch]
-  (UserSubsystem. actor-name role-f result-ch))
+  (UserSubsystem. actor-name role-f result-ch
+                  (atom user-subsystem-default-state)))
 
-(deftype ActorSystem [actor-name role-f result-ch]
+(def ^:private actor-system-default-state
+  {:user-guard-ref nil})
+
+(deftype ActorSystem [actor-name role-f result-ch !state]
   Role
   (init [this ctx]
     (println "In actor system init...")
-    (spawn! ctx "user"
-            (partial mk-user-subsystem actor-name role-f result-ch)))
-  (handle [this ctx msg])
-  (cleanup [this]))
+    (let [user-guard-ref
+          (spawn! ctx "user" (partial mk-user-subsystem actor-name role-f result-ch))]
+      (swap! !state assoc :user-guard-ref user-guard-ref)
+      (watch ctx user-guard-ref)))
+  (handle [this ctx msg]
+    (case (first msg)
+      ::terminated
+      (when (= (second msg) (:user-guard-ref @!state))
+        (println "The user guard is dead. Stopping the actor system...")
+        ::stopped)
+      nil))
+  (cleanup [this ctx]
+    (when-some [user-guard-ref (:user-guard-ref @!state)]
+      (unwatch ctx user-guard-ref))
+    (reset! !state actor-system-default-state)))
 
 (defn- mk-actor-system
   [actor-name role-f result-ch]
-  (ActorSystem. actor-name role-f result-ch))
+  (ActorSystem. actor-name role-f result-ch
+                (atom actor-system-default-state)))
 
 (defn <start-system!
   [actor-name role-f]
@@ -210,7 +267,7 @@
         :greet (println (str greeting " " (second msg) "!"))
         :stop ::stopped
         nil))
-    (cleanup [this]))
+    (cleanup [this ctx]))
 
   (defn mk-greeter
     [greeting]
@@ -226,5 +283,5 @@
 
   (tap> @!main-actor-ref)
 
-  (ns-unmap (find-ns 'eploko.globe5) 'main-actor-ref)
+  (ns-unmap (find-ns 'eploko.globe5) 'Watchable)
   ,)
