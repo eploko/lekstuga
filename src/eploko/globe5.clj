@@ -1,7 +1,8 @@
 (ns eploko.globe5
   (:require
    [clojure.core.async :as async :refer [<! >! chan go go-loop]]
-   [clojure.core.async.impl.protocols :as async-protocols]))
+   [clojure.core.async.impl.protocols :as async-protocols]
+   [clojure.string :as str]))
 
 (deftype UnboundBuffer [!buf]
   async-protocols/Buffer
@@ -150,13 +151,14 @@
   (ActorContext. self-ref actor-f (mk-children-registry)))
 
 (defn- init-actor
-  [actor-f ctx]
-  (let [actor-inst (actor-f)]
+  [ctx]
+  (let [actor-f (get-actor-f ctx)
+        actor-inst (actor-f)]
     (init actor-inst ctx)
     actor-inst))
 
 (defn- <stopped-behavior
-  [ctx actor-inst _actor-f]
+  [ctx actor-inst]
   (go
     (async/close! (normal-port (self ctx)))
     (async/close! (ctrl-port (self ctx)))
@@ -167,19 +169,19 @@
 (declare <default-behavior)
 
 (defn- <exception-behavior
-  [e ctx actor-inst actor-f]
+  [e ctx actor-inst]
   (go
     (println "exception:" e "actor will restart:" (self ctx))
     (cleanup actor-inst ctx)
-    [<default-behavior (init-actor actor-f ctx)]))
+    [<default-behavior (init-actor ctx)]))
 
 (defn- <terminated-behavior
-  [child-ref ctx actor-inst _actor-f]
+  [child-ref ctx actor-inst]
   (go (remove-child! ctx child-ref)
       [<default-behavior actor-inst]))
 
 (defn- <default-behavior
-  [ctx actor-inst _actor-f]
+  [ctx actor-inst]
   (let [self-ref (self ctx)]
     (go 
       (when-some [[msg port]
@@ -199,12 +201,11 @@
 
 (defn- run-loop!
   [ctx]
-  (let [self-ref (self ctx)
-        actor-f (get-actor-f ctx)]
+  (let [self-ref (self ctx)]
     (go-loop [behavior <default-behavior
-              actor-inst (init-actor actor-f ctx)]
+              actor-inst (init-actor ctx)]
       (let [result
-            (<! (behavior ctx actor-inst actor-f))]
+            (<! (behavior ctx actor-inst))]
         (cond
           (= ::terminate-run-loop result)
           (do
@@ -311,4 +312,10 @@
   (tap> @!main-actor-ref)
 
   (ns-unmap (find-ns 'eploko.globe5) 'mk-actor)
+
+  ;; all names in the ns
+  (filter #(str/starts-with? % "#'eploko.globe5/")
+          (map str
+               (vals
+                (ns-map (find-ns 'eploko.globe5)))))
   ,)
