@@ -116,24 +116,30 @@
   (handle [this ctx msg] "Handles the message.")
   (cleanup [this ctx] "Cleans up resources, saves the state."))
 
-(deftype RoleContext [actor]
+(deftype ActorContext [self-ref ^ChildrenRegistry children]
   SelfProvider
-  (self [this] (self actor))
+  (self [this] self-ref)
 
   Spawner
   (spawn! [this actor-name role-f]
-    (println "In role context spawn!...")
-    (spawn! actor actor-name role-f))
+    (let [child-ref (mk-local-actor-ref actor-name)]
+      (reg! children child-ref
+            (mk-actor self-ref child-ref role-f))))
+
+  ActorParent
+  (remove-child! [this child-ref]
+    (println "Removing child:" child-ref)
+    (unreg! children child-ref))
 
   ActorRefWatcher
   (watch [this target-ref]
-    (reg-watcher! target-ref (self this)))
+    (reg-watcher! target-ref self-ref))
   (unwatch [this target-ref]
-    (unreg-watcher! target-ref (self this))))
+    (unreg-watcher! target-ref self-ref)))
 
-(defn- mk-role-context
-  [actor]
-  (RoleContext. actor))
+(defn- mk-actor-context
+  [self-ref]
+  (ActorContext. self-ref (mk-children-registry)))
 
 (defn- init-role
   [role-f ctx]
@@ -160,8 +166,8 @@
     [<default-behavior (init-role role-f ctx)]))
 
 (defn- <terminated-behavior
-  [child-ref actor _ctx role-inst _role-f]
-  (go (remove-child! actor child-ref)
+  [child-ref _actor ctx role-inst _role-f]
+  (go (remove-child! ctx child-ref)
       [<default-behavior role-inst]))
 
 (defn- <default-behavior
@@ -185,41 +191,30 @@
 
 (declare mk-actor)
 
-(deftype Actor [parent self-ref role-f ^ChildrenRegistry children]
+(deftype Actor [parent self-ref role-f ctx]
   SelfProvider
   (self [this] self-ref)
-  
-  Spawner
-  (spawn! [this actor-name role-f]
-    (let [child-ref (mk-local-actor-ref actor-name)]
-      (reg! children child-ref
-            (mk-actor self-ref child-ref role-f))))
-
-  ActorParent
-  (remove-child! [this child-ref]
-    (println "Removing child:" child-ref)
-    (unreg! children child-ref))
 
   MessageProcessor
   (run-loop! [this]
-    (let [ctx (mk-role-context this)]
-      (go-loop [behavior <default-behavior
-                role-inst (init-role role-f ctx)]
-        (let [result
-              (<! (behavior this ctx role-inst role-f))]
-          (cond
-            (= ::terminate-run-loop result)
-            (do
-              (println "Run loop terminated.")
-              (ctrl! parent [::terminated self-ref])
-              (reg-death! self-ref))
-            (vector? result)
-            (recur (first result) (second result))
-            :else (throw (ex-info "Invalid behavior result!" {:result result}))))))))
+    (go-loop [behavior <default-behavior
+              role-inst (init-role role-f ctx)]
+      (let [result
+            (<! (behavior this ctx role-inst role-f))]
+        (cond
+          (= ::terminate-run-loop result)
+          (do
+            (println "Run loop terminated.")
+            (ctrl! parent [::terminated self-ref])
+            (reg-death! self-ref))
+          (vector? result)
+          (recur (first result) (second result))
+          :else (throw (ex-info "Invalid behavior result!" {:result result})))))))
 
 (defn- mk-actor
   [parent self-ref role-f]
-  (run-loop! (Actor. parent self-ref role-f (mk-children-registry)))
+  (run-loop! (Actor. parent self-ref role-f
+                     (mk-actor-context self-ref)))
   self-ref)
 
 (def ^:private user-subsystem-default-state
@@ -287,6 +282,8 @@
     result-ch))
 
 (comment
+  ;; TODO: Rename RoleContext to ActorContext
+  ;; TODO: Move children to the actor context
   (deftype Greeter [greeting !x]
     Role
     (init [this ctx]
@@ -312,5 +309,5 @@
 
   (tap> @!main-actor-ref)
 
-  (ns-unmap (find-ns 'eploko.globe5) 'Watchable)
+  (ns-unmap (find-ns 'eploko.globe5) 'mk-role-context)
   ,)
