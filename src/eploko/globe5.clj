@@ -52,7 +52,8 @@
   (reg-death! [this]
     (reset! !dead? true)
     (doseq [watcher (first (swap-vals! !watchers #{}))]
-      (tell! watcher [::terminated this])))
+      (tell! watcher [::terminated this]))
+    (ctrl! parent-ref [::terminated this]))
 
   MessageFeed
   (normal-port [this] normal-port)
@@ -141,16 +142,22 @@
     (init actor-inst ctx)
     actor-inst))
 
+(declare <default-behavior)
+
+(defn- <init-behavior
+  [ctx _actor-inst]
+  (go [<default-behavior (init-actor ctx)]))
+
 (defn- <stopped-behavior
   [ctx actor-inst]
   (go
-    (async/close! (normal-port (self ctx)))
-    (async/close! (ctrl-port (self ctx)))
-    (cleanup actor-inst ctx)
-    (println "Actor stopped:" (self ctx))
+    (let [self-ref (self ctx)]
+      (async/close! (normal-port self-ref))
+      (async/close! (ctrl-port self-ref))
+      (cleanup actor-inst ctx)
+      (println "Actor stopped:" self-ref)
+      (reg-death! self-ref))
     ::terminate-run-loop))
-
-(declare <default-behavior)
 
 (defn- <exception-behavior
   [e ctx actor-inst]
@@ -185,20 +192,12 @@
 
 (defn- run-loop!
   [ctx]
-  (let [self-ref (self ctx)]
-    (go-loop [behavior <default-behavior
-              actor-inst (init-actor ctx)]
-      (let [result
-            (<! (behavior ctx actor-inst))]
-        (cond
-          (= ::terminate-run-loop result)
-          (do
-            (println "Run loop terminated.")
-            (ctrl! (parent self-ref) [::terminated self-ref])
-            (reg-death! self-ref))
-          (vector? result)
-          (recur (first result) (second result))
-          :else (throw (ex-info "Invalid behavior result!" {:result result})))))))
+  (go-loop [[behavior actor-inst]
+            [<init-behavior nil]]
+    (let [result (<! (behavior ctx actor-inst))]
+      (case result
+        ::terminate-run-loop (println "Run loop terminated.")
+        (recur result)))))
 
 (defn- spawn-actor!
   [self-ref actor-f]
