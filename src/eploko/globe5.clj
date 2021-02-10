@@ -106,7 +106,7 @@
   (unwatch [this target-ref] "Deregisters interest in watching."))
 
 (defprotocol ActorParent
-  (remove-child! [this actor-name] "Discards the child."))
+  (remove-child! [this child-ref] "Discards the child."))
 
 (defprotocol SelfProvider
   (self [this] "Returns the self ref."))
@@ -136,78 +136,91 @@
   (RoleContext. actor))
 
 (defn- init-role
-  [role-f actor]
+  [role-f ctx]
   (let [role-inst (role-f)]
-    (init role-inst (mk-role-context actor))
+    (init role-inst ctx)
     role-inst))
 
 (defn- <stopped-behavior
-  [actor role-inst _role-f]
+  [_actor ctx role-inst _role-f]
   (go
-    (async/close! (normal-port (self actor)))
-    (async/close! (ctrl-port (self actor)))
-    (cleanup role-inst (mk-role-context actor))
-    (println "Actor stopped:" (self actor))
+    (async/close! (normal-port (self ctx)))
+    (async/close! (ctrl-port (self ctx)))
+    (cleanup role-inst ctx)
+    (println "Actor stopped:" (self ctx))
     ::terminate-run-loop))
 
+(declare <default-behavior)
+
+(defn- <exception-behavior
+  [e _actor ctx role-inst role-f]
+  (go
+    (println "exception:" e "actor will restart:" (self ctx))
+    (cleanup role-inst ctx)
+    [<default-behavior (init-role role-f ctx)]))
+
+(defn- <terminated-behavior
+  [child-ref actor _ctx role-inst _role-f]
+  (go (remove-child! actor child-ref)
+      [<default-behavior role-inst]))
+
 (defn- <default-behavior
-  [actor role-inst role-f]
-  (let [self-ref (self actor)]
+  [_actor ctx role-inst _role-f]
+  (let [self-ref (self ctx)]
     (go 
       (when-some [[msg port]
                   (async/alts! [(ctrl-port self-ref)
                                 (normal-port self-ref)])]
         (if (= port (ctrl-port self-ref))
           (case (first msg)
-            ::terminated (do
-                           (remove-child! actor (get-actor-name (second msg)))
-                           [<default-behavior role-inst])
+            ::terminated
+            [(partial <terminated-behavior (second msg)) role-inst]
             [<default-behavior role-inst])
-          (let [ctx (mk-role-context actor)]
-            (try
-              (case (handle role-inst ctx msg)
-                ::stopped [<stopped-behavior role-inst]
-                [<default-behavior role-inst])
-              (catch Exception e
-                (println "exception:" e "actor will restart:" actor)
-                (cleanup role-inst ctx)
-                [<default-behavior (init-role role-f actor)]))))))))
+          (try
+            (case (handle role-inst ctx msg)
+              ::stopped [<stopped-behavior role-inst]
+              [<default-behavior role-inst])
+            (catch Exception e
+              [(partial <exception-behavior e) role-inst])))))))
 
 (declare mk-actor)
 
-(deftype Actor [parent self role-f ^ChildrenRegistry children]
+(deftype Actor [parent self-ref role-f ^ChildrenRegistry children]
   SelfProvider
-  (self [this] self)
+  (self [this] self-ref)
   
   Spawner
   (spawn! [this actor-name role-f]
-    (reg! children actor-name
-          (mk-actor self (mk-local-actor-ref actor-name) role-f)))
+    (let [child-ref (mk-local-actor-ref actor-name)]
+      (reg! children child-ref
+            (mk-actor self-ref child-ref role-f))))
 
   ActorParent
-  (remove-child! [this actor-name]
-    (println "Removing child:" actor-name)
-    (unreg! children actor-name))
+  (remove-child! [this child-ref]
+    (println "Removing child:" child-ref)
+    (unreg! children child-ref))
 
   MessageProcessor
   (run-loop! [this]
-    (go-loop [behavior <default-behavior
-              role-inst (init-role role-f this)]
-      (let [result (<! (behavior this role-inst role-f))]
-        (cond
-          (= ::terminate-run-loop result)
-          (do
-            (println "Run loop terminated.")
-            (ctrl! parent [::terminated self])
-            (reg-death! self))
-          (vector? result)
-          (recur (first result) (second result))
-          :else (throw (ex-info "Invalid behavior result!" {:result result})))))))
+    (let [ctx (mk-role-context this)]
+      (go-loop [behavior <default-behavior
+                role-inst (init-role role-f ctx)]
+        (let [result
+              (<! (behavior this ctx role-inst role-f))]
+          (cond
+            (= ::terminate-run-loop result)
+            (do
+              (println "Run loop terminated.")
+              (ctrl! parent [::terminated self-ref])
+              (reg-death! self-ref))
+            (vector? result)
+            (recur (first result) (second result))
+            :else (throw (ex-info "Invalid behavior result!" {:result result}))))))))
 
 (defn- mk-actor
-  [parent self role-f]
-  (run-loop! (Actor. parent self role-f (mk-children-registry)))
-  self)
+  [parent self-ref role-f]
+  (run-loop! (Actor. parent self-ref role-f (mk-children-registry)))
+  self-ref)
 
 (def ^:private user-subsystem-default-state
   {:main-actor-ref nil})
