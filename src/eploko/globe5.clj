@@ -111,6 +111,9 @@
 (defprotocol SelfProvider
   (self [this] "Returns the self ref."))
 
+(defprotocol RoleProvider
+  (get-role-f [this] "Returns the role constructor fn."))
+
 (defprotocol Role
   (init [this ctx] "Bootstraps the role.")
   (handle [this ctx msg] "Handles the message.")
@@ -118,9 +121,12 @@
 
 (declare spawn-actor!)
 
-(deftype ActorContext [self-ref ^ChildrenRegistry children]
+(deftype ActorContext [self-ref role-f ^ChildrenRegistry children]
   SelfProvider
   (self [this] self-ref)
+
+  RoleProvider
+  (get-role-f [this] role-f)
 
   Spawner
   (spawn! [this actor-name role-f]
@@ -140,8 +146,8 @@
     (unreg-watcher! target-ref self-ref)))
 
 (defn- mk-actor-context
-  [self-ref]
-  (ActorContext. self-ref (mk-children-registry)))
+  [self-ref role-f]
+  (ActorContext. self-ref role-f (mk-children-registry)))
 
 (defn- init-role
   [role-f ctx]
@@ -192,8 +198,9 @@
               [(partial <exception-behavior e) role-inst])))))))
 
 (defn- run-loop!
-  [role-f ctx]
-  (let [self-ref (self ctx)]
+  [ctx]
+  (let [self-ref (self ctx)
+        role-f (get-role-f ctx)]
     (go-loop [behavior <default-behavior
               role-inst (init-role role-f ctx)]
       (let [result
@@ -210,7 +217,7 @@
 
 (defn- spawn-actor!
   [self-ref role-f]
-  (run-loop! role-f (mk-actor-context self-ref))
+  (run-loop! (mk-actor-context self-ref role-f))
   self-ref)
 
 (def ^:private user-subsystem-default-state
