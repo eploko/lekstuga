@@ -167,32 +167,36 @@
     (run-loop! new-actor)
     new-actor))
 
-(deftype UserSubsystem []
+(deftype UserSubsystem [actor-name role-f]
   Role
   (init [this ctx]
-    (println "In user subsystem init..."))
+    (println "In user subsystem init...")
+    (println "Started main actor:"
+             (spawn! ctx actor-name role-f)))
   (handle [this ctx msg])
   (cleanup [this]))
 
 (defn- mk-user-subsystem
-  []
-  (UserSubsystem.))
+  [actor-name role-f]
+  (UserSubsystem. actor-name role-f))
 
-(deftype ActorSystem []
+(deftype ActorSystem [actor-name role-f]
   Role
   (init [this ctx]
     (println "In actor system init...")
-    (spawn! ctx "user" mk-user-subsystem))
+    (spawn! ctx "user"
+            (partial mk-user-subsystem actor-name role-f)))
   (handle [this ctx msg])
   (cleanup [this]))
 
 (defn- mk-actor-system
-  []
-  (ActorSystem.))
+  [actor-name role-f]
+  (ActorSystem. actor-name role-f))
 
 (defn start-system!
-  []
-  (mk-actor nil (mk-local-actor-ref "") mk-actor-system))
+  [actor-name role-f]
+  (mk-actor nil (mk-local-actor-ref "")
+            (partial mk-actor-system actor-name role-f)))
 
 (comment
   (deftype Greeter [greeting !x]
@@ -210,7 +214,7 @@
     [greeting]
     (Greeter. greeting (atom 0)))
 
-  (def as (start-system!))
+  (def as (start-system! "greeter" (partial mk-greeter "Hello")))
   
   (def main-actor-ref
     (spawn! as "greeter" (partial mk-greeter "Hello")))
