@@ -99,7 +99,7 @@
   (ChildrenRegistry. (atom {})))
 
 (defprotocol Spawner
-  (spawn! [this actor-name role-f] "Spawns a new child. Returns the child's actor ref."))
+  (spawn! [this actor-name actor-f] "Spawns a new child. Returns the child's actor ref."))
 
 (defprotocol ActorRefWatcher
   (watch [this target-ref] "Waits until the target-ref's actor terminates and notifies about it.")
@@ -111,28 +111,28 @@
 (defprotocol SelfProvider
   (self [this] "Returns the self ref."))
 
-(defprotocol RoleProvider
-  (get-role-f [this] "Returns the role constructor fn."))
+(defprotocol ActorProvider
+  (get-actor-f [this] "Returns the actor constructor fn."))
 
-(defprotocol Role
-  (init [this ctx] "Bootstraps the role.")
+(defprotocol Actor
+  (init [this ctx] "Bootstraps the actor.")
   (handle [this ctx msg] "Handles the message.")
   (cleanup [this ctx] "Cleans up resources, saves the state."))
 
 (declare spawn-actor!)
 
-(deftype ActorContext [self-ref role-f ^ChildrenRegistry children]
+(deftype ActorContext [self-ref actor-f ^ChildrenRegistry children]
   SelfProvider
   (self [this] self-ref)
 
-  RoleProvider
-  (get-role-f [this] role-f)
+  ActorProvider
+  (get-actor-f [this] actor-f)
 
   Spawner
-  (spawn! [this actor-name role-f]
+  (spawn! [this actor-name actor-f]
     (let [child-ref (mk-local-actor-ref self-ref actor-name)]
       (reg! children child-ref
-            (spawn-actor! child-ref role-f))))
+            (spawn-actor! child-ref actor-f))))
 
   ActorParent
   (remove-child! [this child-ref]
@@ -146,40 +146,40 @@
     (unreg-watcher! target-ref self-ref)))
 
 (defn- mk-actor-context
-  [self-ref role-f]
-  (ActorContext. self-ref role-f (mk-children-registry)))
+  [self-ref actor-f]
+  (ActorContext. self-ref actor-f (mk-children-registry)))
 
-(defn- init-role
-  [role-f ctx]
-  (let [role-inst (role-f)]
-    (init role-inst ctx)
-    role-inst))
+(defn- init-actor
+  [actor-f ctx]
+  (let [actor-inst (actor-f)]
+    (init actor-inst ctx)
+    actor-inst))
 
 (defn- <stopped-behavior
-  [ctx role-inst _role-f]
+  [ctx actor-inst _actor-f]
   (go
     (async/close! (normal-port (self ctx)))
     (async/close! (ctrl-port (self ctx)))
-    (cleanup role-inst ctx)
+    (cleanup actor-inst ctx)
     (println "Actor stopped:" (self ctx))
     ::terminate-run-loop))
 
 (declare <default-behavior)
 
 (defn- <exception-behavior
-  [e ctx role-inst role-f]
+  [e ctx actor-inst actor-f]
   (go
     (println "exception:" e "actor will restart:" (self ctx))
-    (cleanup role-inst ctx)
-    [<default-behavior (init-role role-f ctx)]))
+    (cleanup actor-inst ctx)
+    [<default-behavior (init-actor actor-f ctx)]))
 
 (defn- <terminated-behavior
-  [child-ref ctx role-inst _role-f]
+  [child-ref ctx actor-inst _actor-f]
   (go (remove-child! ctx child-ref)
-      [<default-behavior role-inst]))
+      [<default-behavior actor-inst]))
 
 (defn- <default-behavior
-  [ctx role-inst _role-f]
+  [ctx actor-inst _actor-f]
   (let [self-ref (self ctx)]
     (go 
       (when-some [[msg port]
@@ -188,23 +188,23 @@
         (if (= port (ctrl-port self-ref))
           (case (first msg)
             ::terminated
-            [(partial <terminated-behavior (second msg)) role-inst]
-            [<default-behavior role-inst])
+            [(partial <terminated-behavior (second msg)) actor-inst]
+            [<default-behavior actor-inst])
           (try
-            (case (handle role-inst ctx msg)
-              ::stopped [<stopped-behavior role-inst]
-              [<default-behavior role-inst])
+            (case (handle actor-inst ctx msg)
+              ::stopped [<stopped-behavior actor-inst]
+              [<default-behavior actor-inst])
             (catch Exception e
-              [(partial <exception-behavior e) role-inst])))))))
+              [(partial <exception-behavior e) actor-inst])))))))
 
 (defn- run-loop!
   [ctx]
   (let [self-ref (self ctx)
-        role-f (get-role-f ctx)]
+        actor-f (get-actor-f ctx)]
     (go-loop [behavior <default-behavior
-              role-inst (init-role role-f ctx)]
+              actor-inst (init-actor actor-f ctx)]
       (let [result
-            (<! (behavior ctx role-inst role-f))]
+            (<! (behavior ctx actor-inst actor-f))]
         (cond
           (= ::terminate-run-loop result)
           (do
@@ -216,18 +216,18 @@
           :else (throw (ex-info "Invalid behavior result!" {:result result})))))))
 
 (defn- spawn-actor!
-  [self-ref role-f]
-  (run-loop! (mk-actor-context self-ref role-f))
+  [self-ref actor-f]
+  (run-loop! (mk-actor-context self-ref actor-f))
   self-ref)
 
 (def ^:private user-subsystem-default-state
   {:main-actor-ref nil})
 
-(deftype UserSubsystem [actor-name role-f result-ch !state]
-  Role
+(deftype UserSubsystem [actor-name actor-f result-ch !state]
+  Actor
   (init [this ctx]
     (println "In user subsystem init...")
-    (let [main-actor-ref (spawn! ctx actor-name role-f)]
+    (let [main-actor-ref (spawn! ctx actor-name actor-f)]
       (go (>! result-ch main-actor-ref)
           (async/close! result-ch))
       (swap! !state assoc :main-actor-ref main-actor-ref)
@@ -245,19 +245,19 @@
     (reset! !state user-subsystem-default-state)))
 
 (defn- mk-user-subsystem
-  [actor-name role-f result-ch]
-  (UserSubsystem. actor-name role-f result-ch
+  [actor-name actor-f result-ch]
+  (UserSubsystem. actor-name actor-f result-ch
                   (atom user-subsystem-default-state)))
 
 (def ^:private actor-system-default-state
   {:user-guard-ref nil})
 
-(deftype ActorSystem [actor-name role-f result-ch !state]
-  Role
+(deftype ActorSystem [actor-name actor-f result-ch !state]
+  Actor
   (init [this ctx]
     (println "In actor system init...")
     (let [user-guard-ref
-          (spawn! ctx "user" (partial mk-user-subsystem actor-name role-f result-ch))]
+          (spawn! ctx "user" (partial mk-user-subsystem actor-name actor-f result-ch))]
       (swap! !state assoc :user-guard-ref user-guard-ref)
       (watch ctx user-guard-ref)))
   (handle [this ctx msg]
@@ -273,20 +273,20 @@
     (reset! !state actor-system-default-state)))
 
 (defn- mk-actor-system
-  [actor-name role-f result-ch]
-  (ActorSystem. actor-name role-f result-ch
+  [actor-name actor-f result-ch]
+  (ActorSystem. actor-name actor-f result-ch
                 (atom actor-system-default-state)))
 
 (defn <start-system!
-  [actor-name role-f]
+  [actor-name actor-f]
   (let [result-ch (chan)]
     (spawn-actor! (mk-local-actor-ref (mk-bubble-ref) "")
-                  (partial mk-actor-system actor-name role-f result-ch))
+                  (partial mk-actor-system actor-name actor-f result-ch))
     result-ch))
 
 (comment
   (deftype Greeter [greeting !x]
-    Role
+    Actor
     (init [this ctx]
       (println "In greeter init..."))
     (handle [this ctx msg]
