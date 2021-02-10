@@ -192,25 +192,25 @@
               [(partial <exception-behavior e) role-inst])))))))
 
 (defn- run-loop!
-  [self-ref role-f ctx]
-  (go-loop [behavior <default-behavior
-            role-inst (init-role role-f ctx)]
-    (let [result
-          (<! (behavior ctx role-inst role-f))]
-      (cond
-        (= ::terminate-run-loop result)
-        (do
-          (println "Run loop terminated.")
-          (ctrl! (parent self-ref) [::terminated self-ref])
-          (reg-death! self-ref))
-        (vector? result)
-        (recur (first result) (second result))
-        :else (throw (ex-info "Invalid behavior result!" {:result result}))))))
+  [role-f ctx]
+  (let [self-ref (self ctx)]
+    (go-loop [behavior <default-behavior
+              role-inst (init-role role-f ctx)]
+      (let [result
+            (<! (behavior ctx role-inst role-f))]
+        (cond
+          (= ::terminate-run-loop result)
+          (do
+            (println "Run loop terminated.")
+            (ctrl! (parent self-ref) [::terminated self-ref])
+            (reg-death! self-ref))
+          (vector? result)
+          (recur (first result) (second result))
+          :else (throw (ex-info "Invalid behavior result!" {:result result})))))))
 
 (defn- spawn-actor!
   [self-ref role-f]
-  (run-loop! self-ref role-f
-             (mk-actor-context self-ref))
+  (run-loop! role-f (mk-actor-context self-ref))
   self-ref)
 
 (def ^:private user-subsystem-default-state
