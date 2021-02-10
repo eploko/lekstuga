@@ -148,7 +148,7 @@
     role-inst))
 
 (defn- <stopped-behavior
-  [_actor ctx role-inst _role-f]
+  [ctx role-inst _role-f]
   (go
     (async/close! (normal-port (self ctx)))
     (async/close! (ctrl-port (self ctx)))
@@ -159,19 +159,19 @@
 (declare <default-behavior)
 
 (defn- <exception-behavior
-  [e _actor ctx role-inst role-f]
+  [e ctx role-inst role-f]
   (go
     (println "exception:" e "actor will restart:" (self ctx))
     (cleanup role-inst ctx)
     [<default-behavior (init-role role-f ctx)]))
 
 (defn- <terminated-behavior
-  [child-ref _actor ctx role-inst _role-f]
+  [child-ref ctx role-inst _role-f]
   (go (remove-child! ctx child-ref)
       [<default-behavior role-inst]))
 
 (defn- <default-behavior
-  [_actor ctx role-inst _role-f]
+  [ctx role-inst _role-f]
   (let [self-ref (self ctx)]
     (go 
       (when-some [[msg port]
@@ -200,7 +200,7 @@
     (go-loop [behavior <default-behavior
               role-inst (init-role role-f ctx)]
       (let [result
-            (<! (behavior this ctx role-inst role-f))]
+            (<! (behavior ctx role-inst role-f))]
         (cond
           (= ::terminate-run-loop result)
           (do
@@ -282,8 +282,6 @@
     result-ch))
 
 (comment
-  ;; TODO: Rename RoleContext to ActorContext
-  ;; TODO: Move children to the actor context
   (deftype Greeter [greeting !x]
     Role
     (init [this ctx]
