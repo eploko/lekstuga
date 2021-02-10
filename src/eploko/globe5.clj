@@ -167,36 +167,38 @@
     (run-loop! new-actor)
     new-actor))
 
-(deftype UserSubsystem [actor-name role-f]
+(deftype UserSubsystem [actor-name role-f result-ch]
   Role
   (init [this ctx]
     (println "In user subsystem init...")
-    (println "Started main actor:"
-             (spawn! ctx actor-name role-f)))
+    (go (>! result-ch (spawn! ctx actor-name role-f))
+        (async/close! result-ch)))
   (handle [this ctx msg])
   (cleanup [this]))
 
 (defn- mk-user-subsystem
-  [actor-name role-f]
-  (UserSubsystem. actor-name role-f))
+  [actor-name role-f result-ch]
+  (UserSubsystem. actor-name role-f result-ch))
 
-(deftype ActorSystem [actor-name role-f]
+(deftype ActorSystem [actor-name role-f result-ch]
   Role
   (init [this ctx]
     (println "In actor system init...")
     (spawn! ctx "user"
-            (partial mk-user-subsystem actor-name role-f)))
+            (partial mk-user-subsystem actor-name role-f result-ch)))
   (handle [this ctx msg])
   (cleanup [this]))
 
 (defn- mk-actor-system
-  [actor-name role-f]
-  (ActorSystem. actor-name role-f))
+  [actor-name role-f result-ch]
+  (ActorSystem. actor-name role-f result-ch))
 
-(defn start-system!
+(defn <start-system!
   [actor-name role-f]
-  (mk-actor nil (mk-local-actor-ref "")
-            (partial mk-actor-system actor-name role-f)))
+  (let [result-ch (chan)]
+    (mk-actor nil (mk-local-actor-ref "")
+              (partial mk-actor-system actor-name role-f result-ch))
+    result-ch))
 
 (comment
   (deftype Greeter [greeting !x]
@@ -214,14 +216,15 @@
     [greeting]
     (Greeter. greeting (atom 0)))
 
-  (def as (start-system! "greeter" (partial mk-greeter "Hello")))
+  (def !main-actor-ref (atom nil))
+
+  (go (reset! !main-actor-ref (<! (<start-system! "greeter" (partial mk-greeter "Hello"))))
+      (println "Main actor ref received:" @!main-actor-ref))
   
-  (def main-actor-ref
-    (spawn! as "greeter" (partial mk-greeter "Hello")))
-  (tell! main-actor-ref [:greet "Andrey"])
-  (tell! main-actor-ref [:stop])
+  (tell! @!main-actor-ref [:greet "Andrey"])
+  (tell! @!main-actor-ref [:stop])
 
-  (tap> main-actor-ref)
+  (tap> @!main-actor-ref)
 
-  (ns-unmap (find-ns 'eploko.globe5) 'MessageConsumer)
+  (ns-unmap (find-ns 'eploko.globe5) 'main-actor-ref)
   ,)
