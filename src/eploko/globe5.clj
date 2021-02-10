@@ -24,6 +24,7 @@
   (UnboundBuffer. (atom [])))
 
 (defprotocol ActorRef
+  (parent [this] "Returns the parent ref.")
   (get-actor-name [this] "Returns the name of the underlying actor.")
   (tell! [this msg] "Sends the message to the underlying actor.")
   (ctrl! [this msg] "Sends the ctrl message to the underlying actor.")
@@ -35,8 +36,9 @@
   (normal-port [this] "Returns the normal port.")
   (ctrl-port [this] "Returns the ctrl port."))
 
-(deftype LocalActorRef [actor-name normal-port ctrl-port !dead? !watchers]
+(deftype LocalActorRef [parent-ref actor-name normal-port ctrl-port !dead? !watchers]
   ActorRef
+  (parent [this] parent-ref)
   (get-actor-name [this] actor-name)
   (tell! [this msg] (go (>! normal-port msg)))
   (ctrl! [this msg] (go (>! ctrl-port msg)))
@@ -56,13 +58,14 @@
   (ctrl-port [this] ctrl-port))
 
 (defn mk-local-actor-ref
-  [actor-name]
-  (LocalActorRef. actor-name
+  [parent-ref actor-name]
+  (LocalActorRef. parent-ref actor-name
                   (chan (unbound-buf)) (chan (unbound-buf))
                   (atom false) (atom #{})))
 
 (deftype BubbleRef []
   ActorRef
+  (parent [this] nil)
   (get-actor-name [this] nil)
   (tell! [this msg]
     (println "Bubble hears:" msg))
@@ -121,9 +124,9 @@
 
   Spawner
   (spawn! [this actor-name role-f]
-    (let [child-ref (mk-local-actor-ref actor-name)]
+    (let [child-ref (mk-local-actor-ref self-ref actor-name)]
       (reg! children child-ref
-            (spawn-actor! self-ref child-ref role-f))))
+            (spawn-actor! child-ref role-f))))
 
   ActorParent
   (remove-child! [this child-ref]
@@ -189,7 +192,7 @@
               [(partial <exception-behavior e) role-inst])))))))
 
 (defn- run-loop!
-  [parent self-ref role-f ctx]
+  [self-ref role-f ctx]
   (go-loop [behavior <default-behavior
             role-inst (init-role role-f ctx)]
     (let [result
@@ -198,15 +201,15 @@
         (= ::terminate-run-loop result)
         (do
           (println "Run loop terminated.")
-          (ctrl! parent [::terminated self-ref])
+          (ctrl! (parent self-ref) [::terminated self-ref])
           (reg-death! self-ref))
         (vector? result)
         (recur (first result) (second result))
         :else (throw (ex-info "Invalid behavior result!" {:result result}))))))
 
 (defn- spawn-actor!
-  [parent self-ref role-f]
-  (run-loop! parent self-ref role-f
+  [self-ref role-f]
+  (run-loop! self-ref role-f
              (mk-actor-context self-ref))
   self-ref)
 
@@ -270,7 +273,7 @@
 (defn <start-system!
   [actor-name role-f]
   (let [result-ch (chan)]
-    (spawn-actor! (mk-bubble-ref) (mk-local-actor-ref "")
+    (spawn-actor! (mk-local-actor-ref (mk-bubble-ref) "")
                   (partial mk-actor-system actor-name role-f result-ch))
     result-ch))
 
