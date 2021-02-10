@@ -31,9 +31,6 @@
   (unreg-watcher! [this actor-ref] "Unregisters a watcher.")
   (reg-death! [this] "Notifies watchers the actor is dead."))
 
-(defprotocol MessageProcessor
-  (run-loop! [this role-f ctx] "Processes messages from the mailbox."))
-
 (defprotocol MessageFeed
   (normal-port [this] "Returns the normal port.")
   (ctrl-port [this] "Returns the ctrl port."))
@@ -116,6 +113,8 @@
   (handle [this ctx msg] "Handles the message.")
   (cleanup [this ctx] "Cleans up resources, saves the state."))
 
+(declare spawn-actor!)
+
 (deftype ActorContext [self-ref ^ChildrenRegistry children]
   SelfProvider
   (self [this] self-ref)
@@ -124,7 +123,7 @@
   (spawn! [this actor-name role-f]
     (let [child-ref (mk-local-actor-ref actor-name)]
       (reg! children child-ref
-            (mk-actor self-ref child-ref role-f))))
+            (spawn-actor! self-ref child-ref role-f))))
 
   ActorParent
   (remove-child! [this child-ref]
@@ -189,32 +188,25 @@
             (catch Exception e
               [(partial <exception-behavior e) role-inst])))))))
 
-(declare mk-actor)
+(defn- run-loop!
+  [parent self-ref role-f ctx]
+  (go-loop [behavior <default-behavior
+            role-inst (init-role role-f ctx)]
+    (let [result
+          (<! (behavior ctx role-inst role-f))]
+      (cond
+        (= ::terminate-run-loop result)
+        (do
+          (println "Run loop terminated.")
+          (ctrl! parent [::terminated self-ref])
+          (reg-death! self-ref))
+        (vector? result)
+        (recur (first result) (second result))
+        :else (throw (ex-info "Invalid behavior result!" {:result result}))))))
 
-(deftype Actor [parent self-ref]
-  SelfProvider
-  (self [this] self-ref)
-
-  MessageProcessor
-  (run-loop! [this role-f ctx]
-    (go-loop [behavior <default-behavior
-              role-inst (init-role role-f ctx)]
-      (let [result
-            (<! (behavior ctx role-inst role-f))]
-        (cond
-          (= ::terminate-run-loop result)
-          (do
-            (println "Run loop terminated.")
-            (ctrl! parent [::terminated self-ref])
-            (reg-death! self-ref))
-          (vector? result)
-          (recur (first result) (second result))
-          :else (throw (ex-info "Invalid behavior result!" {:result result})))))))
-
-(defn- mk-actor
+(defn- spawn-actor!
   [parent self-ref role-f]
-  (run-loop! (Actor. parent self-ref)
-             role-f
+  (run-loop! parent self-ref role-f
              (mk-actor-context self-ref))
   self-ref)
 
@@ -278,8 +270,8 @@
 (defn <start-system!
   [actor-name role-f]
   (let [result-ch (chan)]
-    (mk-actor (mk-bubble-ref) (mk-local-actor-ref "")
-              (partial mk-actor-system actor-name role-f result-ch))
+    (spawn-actor! (mk-bubble-ref) (mk-local-actor-ref "")
+                  (partial mk-actor-system actor-name role-f result-ch))
     result-ch))
 
 (comment
@@ -308,5 +300,5 @@
 
   (tap> @!main-actor-ref)
 
-  (ns-unmap (find-ns 'eploko.globe5) 'mk-role-context)
+  (ns-unmap (find-ns 'eploko.globe5) 'mk-actor)
   ,)
