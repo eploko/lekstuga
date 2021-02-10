@@ -83,22 +83,6 @@
   []
   (BubbleRef.))
 
-(defprotocol Registry
-  (reg! [this k v] "Registers the value under the key. Returns `v`.")
-  (unreg! [this k] "Unregs the key."))
-
-(deftype ChildrenRegistry [!children]
-  Registry
-  (reg! [this k v]
-    (swap! !children assoc k v)
-    v)
-  (unreg! [this k]
-    (swap! !children dissoc k)))
-
-(defn- mk-children-registry
-  []
-  (ChildrenRegistry. (atom {})))
-
 (defprotocol Spawner
   (spawn! [this actor-name actor-f] "Spawns a new child. Returns the child's actor ref."))
 
@@ -122,7 +106,7 @@
 
 (declare spawn-actor!)
 
-(deftype ActorContext [self-ref actor-f ^ChildrenRegistry children]
+(deftype ActorContext [self-ref actor-f !children]
   SelfProvider
   (self [this] self-ref)
 
@@ -132,13 +116,13 @@
   Spawner
   (spawn! [this actor-name actor-f]
     (let [child-ref (mk-local-actor-ref self-ref actor-name)]
-      (reg! children child-ref
-            (spawn-actor! child-ref actor-f))))
+      (swap! !children assoc child-ref (spawn-actor! child-ref actor-f))
+      child-ref))
 
   ActorParent
   (remove-child! [this child-ref]
     (println "Removing child:" child-ref)
-    (unreg! children child-ref))
+    (swap! !children dissoc child-ref))
 
   ActorRefWatcher
   (watch [this target-ref]
@@ -148,7 +132,7 @@
 
 (defn- mk-actor-context
   [self-ref actor-f]
-  (ActorContext. self-ref actor-f (mk-children-registry)))
+  (ActorContext. self-ref actor-f (atom {})))
 
 (defn- init-actor
   [ctx]
@@ -311,7 +295,7 @@
 
   (tap> @!main-actor-ref)
 
-  (ns-unmap (find-ns 'eploko.globe5) 'mk-actor)
+  (ns-unmap (find-ns 'eploko.globe5) 'unreg!)
 
   ;; all names in the ns
   (filter #(str/starts-with? % "#'eploko.globe5/")
