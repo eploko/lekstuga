@@ -64,6 +64,24 @@
                   (chan (unbound-buf)) (chan (unbound-buf))
                   (atom false) (atom #{})))
 
+(deftype BubbleRef []
+  ActorRef
+  (get-actor-name [this] nil)
+  (tell! [this msg]
+    (println "Bubble hears:" msg))
+  (ctrl! [this msg]
+    (println "Bubble ponders:" msg))
+  (reg-watcher! [this watcher]
+    (throw (ex-info "Bubble never dies!" {:watcher watcher})))
+  (unreg-watcher! [this watcher]
+    (throw (ex-info "You can't escape the bubble!" {:watcher watcher})))
+  (reg-death! [this]
+    (throw (ex-info "How come the bubble died?!" {}))))
+
+(defn- mk-bubble-ref
+  []
+  (BubbleRef.))
+
 (defprotocol Registry
   (reg! [this k v] "Registers the value under the key. Returns `v`.")
   (unreg! [this k] "Unregs the key."))
@@ -253,7 +271,7 @@
 (defn <start-system!
   [actor-name role-f]
   (let [result-ch (chan)]
-    (mk-actor nil (mk-local-actor-ref "")
+    (mk-actor (mk-bubble-ref) (mk-local-actor-ref "")
               (partial mk-actor-system actor-name role-f result-ch))
     result-ch))
 
