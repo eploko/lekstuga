@@ -173,17 +173,16 @@
                 (cleanup role-inst ctx)
                 [<default-behavior (init-role role-f actor)]))))))))
 
+(declare mk-actor)
+
 (deftype Actor [parent self role-f ^ChildrenRegistry children]
   SelfProvider
   (self [this] self)
   
   Spawner
   (spawn! [this actor-name role-f]
-    (let [new-actor-ref (mk-local-actor-ref actor-name)
-          new-actor (Actor. self new-actor-ref role-f (mk-children-registry))]
-      (reg! children actor-name new-actor)
-      (run-loop! new-actor)
-      new-actor-ref))
+    (reg! children actor-name
+          (mk-actor self (mk-local-actor-ref actor-name) role-f)))
 
   ActorParent
   (remove-child! [this actor-name]
@@ -207,9 +206,8 @@
 
 (defn- mk-actor
   [parent self role-f]
-  (let [new-actor (Actor. parent self role-f (mk-children-registry))]
-    (run-loop! new-actor)
-    new-actor))
+  (run-loop! (Actor. parent self role-f (mk-children-registry)))
+  self)
 
 (def ^:private user-subsystem-default-state
   {:main-actor-ref nil})
