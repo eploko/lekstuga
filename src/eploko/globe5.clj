@@ -26,7 +26,7 @@
 
 (defprotocol ActorRef
   (parent [this] "Returns the parent ref.")
-  (get-actor-name [this] "Returns the name of the underlying actor.")
+  (get-path [this] "Returns its path.")
   (tell! [this msg] "Sends the message to the underlying actor.")
   (ctrl! [this msg] "Sends the ctrl message to the underlying actor.")
   (reg-watcher! [this actor-ref] "Registers a watcher.")
@@ -40,7 +40,7 @@
 (deftype LocalActorRef [parent-ref actor-name normal-port ctrl-port !dead? !watchers]
   ActorRef
   (parent [this] parent-ref)
-  (get-actor-name [this] actor-name)
+  (get-path [this] (str (get-path parent-ref) "/" actor-name))
   (tell! [this msg] (go (>! normal-port msg)))
   (ctrl! [this msg] (go (>! ctrl-port msg)))
   (reg-watcher! [this watcher]
@@ -57,7 +57,11 @@
 
   MessageFeed
   (normal-port [this] normal-port)
-  (ctrl-port [this] ctrl-port))
+  (ctrl-port [this] ctrl-port)
+
+  Object
+  (toString [this]
+    (get-path this)))
 
 (defn mk-local-actor-ref
   [parent-ref actor-name]
@@ -68,7 +72,7 @@
 (deftype BubbleRef []
   ActorRef
   (parent [this] nil)
-  (get-actor-name [this] nil)
+  (get-path [this] "globe:/")
   (tell! [this msg]
     (println "Bubble hears:" msg))
   (ctrl! [this msg]
@@ -271,7 +275,7 @@
 (defn <start-system!
   [actor-name actor-f]
   (let [result-ch (chan)]
-    (spawn-actor! (mk-local-actor-ref (mk-bubble-ref) "")
+    (spawn-actor! (mk-local-actor-ref (mk-bubble-ref) "system@localhost")
                   (partial mk-actor-system actor-name actor-f result-ch))
     result-ch))
 
