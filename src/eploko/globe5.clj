@@ -4,6 +4,27 @@
    [clojure.core.async.impl.protocols :as async-protocols]
    [clojure.string :as str]))
 
+(defn <wait-for
+  [& chs]
+  (go (<! (async/map vector chs))))
+
+(defprotocol ActorRef
+  (parent [this] "Returns the parent ref.")
+  (get-path [this] "Returns its path.")
+  (tell! [this msg] "Sends the message to the underlying actor.")
+  (ctrl! [this msg] "Sends the ctrl message to the underlying actor.")
+  (<ask! [this msg] "Sends the message and waits for a reply")
+  (reg-watcher! [this actor-ref] "Registers a watcher.")
+  (unreg-watcher! [this actor-ref] "Unregisters a watcher.")
+  (reg-death! [this] "Notifies watchers the actor is dead."))
+
+(defn log!
+  [actor-ref & args]
+  (->> args
+       (str/join " ")
+       (format "%s: %s" actor-ref)
+       println))
+
 (deftype UnboundBuffer [!buf]
   async-protocols/Buffer
   (full? [this]
@@ -24,15 +45,6 @@
   []
   (UnboundBuffer. (atom [])))
 
-(defprotocol ActorRef
-  (parent [this] "Returns the parent ref.")
-  (get-path [this] "Returns its path.")
-  (tell! [this msg] "Sends the message to the underlying actor.")
-  (ctrl! [this msg] "Sends the ctrl message to the underlying actor.")
-  (reg-watcher! [this actor-ref] "Registers a watcher.")
-  (unreg-watcher! [this actor-ref] "Unregisters a watcher.")
-  (reg-death! [this] "Notifies watchers the actor is dead."))
-
 (defprotocol MessageFeed
   (normal-port [this] "Returns the normal port.")
   (ctrl-port [this] "Returns the ctrl port."))
@@ -43,6 +55,9 @@
   (get-path [this] (str (get-path parent-ref) "/" actor-name))
   (tell! [this msg] (go (>! normal-port msg)))
   (ctrl! [this msg] (go (>! ctrl-port msg)))
+  (<ask! [this msg]
+    (go (tell! this msg)
+        nil))
   (reg-watcher! [this watcher]
     (if @!dead?
       (tell! watcher [::terminated this])
@@ -74,15 +89,22 @@
   (parent [this] nil)
   (get-path [this] "globe:/")
   (tell! [this msg]
-    (println "Bubble hears:" msg))
+    (log! this "was told:" msg))
   (ctrl! [this msg]
-    (println "Bubble ponders:" msg))
+    (log! this "was signalled:" msg))
+  (<ask! [this msg]
+    (log! this "was asked:" msg)
+    (go nil))
   (reg-watcher! [this watcher]
     (throw (ex-info "Bubble never dies!" {:watcher watcher})))
   (unreg-watcher! [this watcher]
     (throw (ex-info "You can't escape the bubble!" {:watcher watcher})))
   (reg-death! [this]
-    (throw (ex-info "How come the bubble died?!" {}))))
+    (throw (ex-info "How come the bubble died?!" {})))
+
+  Object
+  (toString [this]
+    (get-path this)))
 
 (defn- mk-bubble-ref
   []
@@ -127,11 +149,12 @@
 
   ActorParent
   (remove-child! [this child-ref]
-    (println "Removing child:" child-ref)
+    (log! this "removing child:" child-ref)
     (swap! !children disj child-ref))
   (stop-all-children! [this]
-    (doseq [child-ref @!children]
-      (tell! child-ref [::stop])))
+    (go (<! (apply <wait-for
+                   (map #(<ask! % [::stop])
+                        @!children)))))
 
   ActorRefWatcher
   (watch [this target-ref]
@@ -164,14 +187,15 @@
       (async/close! (ctrl-port self-ref))
       (cleanup actor-inst ctx)
       (stop-all-children! ctx)
-      (println "Actor stopped:" self-ref)
+      (log! self-ref "actor stopped")
       (reg-death! self-ref))
     ::terminate-run-loop))
 
 (defn- <exception-behavior
   [e ctx actor-inst]
   (go
-    (println "exception:" e "actor will restart:" (self ctx))
+    (log! (self ctx) "exception:" e)
+    (log! (self ctx) "actor will restart")
     (cleanup actor-inst ctx)
     [<default-behavior (init-actor ctx)]))
 
@@ -207,7 +231,7 @@
             [<init-behavior nil]]
     (let [result (<! (behavior ctx actor-inst))]
       (case result
-        ::terminate-run-loop (println "Run loop terminated.")
+        ::terminate-run-loop (log! (self ctx) "run loop terminated")
         (recur result)))))
 
 (defn- spawn-actor!
@@ -221,7 +245,7 @@
 (deftype UserSubsystem [actor-name actor-f result-ch !state]
   Actor
   (init [this ctx]
-    (println "In user subsystem init...")
+    (log! (self ctx) "In user subsystem init...")
     (let [main-actor-ref (spawn! ctx actor-name actor-f)]
       (go (>! result-ch main-actor-ref)
           (async/close! result-ch))
@@ -231,7 +255,7 @@
     (case (first msg)
       ::terminated
       (when (= (second msg) (:main-actor-ref @!state))
-        (println "Main actor is dead. Stopping the user guard...")
+        (log! (self ctx) "Main actor is dead. Stopping the user guard...")
         ::stopped)
       nil))
   (cleanup [this ctx]
@@ -250,7 +274,7 @@
 (deftype ActorSystem [actor-name actor-f result-ch !state]
   Actor
   (init [this ctx]
-    (println "In actor system init...")
+    (log! (self ctx) "In actor system init...")
     (let [user-guard-ref
           (spawn! ctx "user" (partial mk-user-subsystem actor-name actor-f result-ch))]
       (swap! !state assoc :user-guard-ref user-guard-ref)
@@ -259,7 +283,7 @@
     (case (first msg)
       ::terminated
       (when (= (second msg) (:user-guard-ref @!state))
-        (println "The user guard is dead. Stopping the actor system...")
+        (log! (self ctx) "The user guard is dead. Stopping the actor system...")
         ::stopped)
       nil))
   (cleanup [this ctx]
@@ -283,7 +307,7 @@
   (deftype MyHero []
     Actor
     (init [this ctx]
-      (println "In MyHero init..."))
+      (log! (self ctx) "In MyHero init..."))
     (handle [this ctx msg])
     (cleanup [this ctx]))
 
@@ -294,11 +318,12 @@
   (deftype Greeter [greeting !x]
     Actor
     (init [this ctx]
-      (println "In greeter init...")
+      (log! (self ctx) "In greeter init...")
       (spawn! ctx "my-hero" mk-my-hero))
     (handle [this ctx msg]
       (case (first msg)
-        :greet (println (str greeting " " (second msg) "!"))
+        :greet (log! (self ctx)
+                     (format "%s %s!" greeting (second msg)))
         :stop ::stopped
         nil))
     (cleanup [this ctx]))
@@ -309,15 +334,14 @@
 
   (def !main-actor-ref (atom nil))
 
-  (go (reset! !main-actor-ref (<! (<start-system! "greeter" (partial mk-greeter "Hello"))))
-      (println "Main actor ref received:" @!main-actor-ref))
+  (go (reset! !main-actor-ref (<! (<start-system! "greeter" (partial mk-greeter "Hello")))))
   
   (tell! @!main-actor-ref [:greet "Andrey"])
   (tell! @!main-actor-ref [:stop])
 
   (tap> @!main-actor-ref)
 
-  (ns-unmap (find-ns 'eploko.globe5) 'unreg!)
+  (ns-unmap (find-ns 'eploko.globe5) 'log)
 
   ;; all names in the ns
   (filter #(str/starts-with? % "#'eploko.globe5/")
