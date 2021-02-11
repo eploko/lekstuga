@@ -92,7 +92,8 @@
   (unwatch [this target-ref] "Deregisters interest in watching."))
 
 (defprotocol ActorParent
-  (remove-child! [this child-ref] "Discards the child."))
+  (remove-child! [this child-ref] "Discards the child.")
+  (stop-all-children! [this] "Stops all of its children."))
 
 (defprotocol SelfProvider
   (self [this] "Returns the self ref."))
@@ -117,13 +118,16 @@
   Spawner
   (spawn! [this actor-name actor-f]
     (let [child-ref (mk-local-actor-ref self-ref actor-name)]
-      (swap! !children assoc child-ref (spawn-actor! child-ref actor-f))
-      child-ref))
+      (swap! !children conj child-ref)
+      (spawn-actor! child-ref actor-f)))
 
   ActorParent
   (remove-child! [this child-ref]
     (println "Removing child:" child-ref)
-    (swap! !children dissoc child-ref))
+    (swap! !children disj child-ref))
+  (stop-all-children! [this]
+    (doseq [child-ref @!children]
+      (tell! child-ref [::stop])))
 
   ActorRefWatcher
   (watch [this target-ref]
@@ -133,7 +137,7 @@
 
 (defn- mk-actor-context
   [self-ref actor-f]
-  (ActorContext. self-ref actor-f (atom {})))
+  (ActorContext. self-ref actor-f (atom #{})))
 
 (defn- init-actor
   [ctx]
@@ -155,6 +159,7 @@
       (async/close! (normal-port self-ref))
       (async/close! (ctrl-port self-ref))
       (cleanup actor-inst ctx)
+      (stop-all-children! ctx)
       (println "Actor stopped:" self-ref)
       (reg-death! self-ref))
     ::terminate-run-loop))
@@ -184,9 +189,11 @@
             [(partial <terminated-behavior (second msg)) actor-inst]
             [<default-behavior actor-inst])
           (try
-            (case (handle actor-inst ctx msg)
-              ::stopped [<stopped-behavior actor-inst]
-              [<default-behavior actor-inst])
+            (case (first msg)
+              ::stop [<stopped-behavior actor-inst]
+              (case (handle actor-inst ctx msg)
+                ::stopped [<stopped-behavior actor-inst]
+                [<default-behavior actor-inst]))
             (catch Exception e
               [(partial <exception-behavior e) actor-inst])))))))
 
@@ -269,10 +276,22 @@
     result-ch))
 
 (comment
+  (deftype MyHero []
+    Actor
+    (init [this ctx]
+      (println "In MyHero init..."))
+    (handle [this ctx msg])
+    (cleanup [this ctx]))
+
+  (defn mk-my-hero
+    []
+    (MyHero.))
+  
   (deftype Greeter [greeting !x]
     Actor
     (init [this ctx]
-      (println "In greeter init..."))
+      (println "In greeter init...")
+      (spawn! ctx "my-hero" mk-my-hero))
     (handle [this ctx msg]
       (case (first msg)
         :greet (println (str greeting " " (second msg) "!"))
