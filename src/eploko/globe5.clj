@@ -56,6 +56,7 @@
   (tell! [this msg] (go (>! normal-port msg)))
   (ctrl! [this msg] (go (>! ctrl-port msg)))
   (<ask! [this msg]
+    ;; TODO: Reply to sender
     (go (tell! this msg)
         nil))
   (reg-watcher! [this watcher]
@@ -94,6 +95,7 @@
     (log! this "was signalled:" msg))
   (<ask! [this msg]
     (log! this "was asked:" msg)
+    ;; TODO: reply to sender
     (go nil))
   (reg-watcher! [this watcher]
     (throw (ex-info "Bubble never dies!" {:watcher watcher})))
