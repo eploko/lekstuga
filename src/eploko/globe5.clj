@@ -4,9 +4,16 @@
    [clojure.core.async.impl.protocols :as async-protocols]
    [clojure.string :as str]))
 
-(defn <wait-for
+(defn <take-all
   [& chs]
-  (go (<! (async/map vector chs))))
+  (go-loop [result []
+            chs chs]
+    (if (seq? chs)
+      (let [[v port] (async/alts! chs)]
+        (if (nil? v)
+          (recur result (seq (remove #{port} chs)))
+          (recur (conj result v) chs)))
+      result)))
 
 (defn mk-msg
   ([sender subj]
@@ -19,6 +26,10 @@
 (defn- ctrl-msg
   [msg]
   (assoc msg :ctrl? true))
+
+(defn- set-msg-sender
+  [msg sender]
+  (assoc msg :from sender))
 
 (defn- mk-ctrl-msg
   ([sender subj]
@@ -42,16 +53,18 @@
   [msg]
   (:body msg))
 
-(defprotocol Postman
-  (tell! [this msg] "Sends the message to the underlying actor.")
-  (<ask! [this msg] "Sends the message and waits for a reply"))
-
 (defprotocol ActorRef
   (parent [this] "Returns the parent ref.")
   (get-path [this] "Returns its path.")
   (reg-watcher! [this actor-ref] "Registers a watcher.")
   (unreg-watcher! [this actor-ref] "Unregisters a watcher.")
   (reg-death! [this] "Notifies watchers the actor is dead."))
+
+(defprotocol Listening
+  (tell! [this msg] "Sends the message to the underlying actor."))
+
+(defprotocol Replying
+  (<ask! [this msg] "Sends the message and waits for a reply"))
 
 (defn log!
   [actor-ref & args]
@@ -84,7 +97,37 @@
   (normal-port [this] "Returns the normal port.")
   (ctrl-port [this] "Returns the ctrl port."))
 
+(deftype ReplyRef [out-ch]
+  Listening
+  (tell! [this msg]
+    (go (>! out-ch msg)
+        (async/close! out-ch))))
+
+(defn- mk-reply-ref
+ [ch]
+ (ReplyRef. ch))
+
 (deftype LocalActorRef [parent-ref actor-name normal-port ctrl-port !dead? !watchers]
+  Listening
+  (tell! [this msg]
+    (go (>! (if (ctrl-msg? msg) ctrl-port normal-port)
+            msg)))
+
+  Replying
+  (<ask! [this msg]
+    (let [ch (chan)
+          timeout-ch (async/timeout 1000)
+          reply-ref (mk-reply-ref ch)
+          new-msg (set-msg-sender msg reply-ref)]
+      (tell! this new-msg)
+      (go
+        (let [[v p] (async/alts! [ch timeout-ch])]
+          (if (= p timeout-ch)
+            (do
+              (log! this "<ask! timed out:" msg)
+              nil)
+            v)))))
+  
   ActorRef
   (parent [this] parent-ref)
   (get-path [this] (str (get-path parent-ref) "/" actor-name))
@@ -99,15 +142,6 @@
     (doseq [watcher (first (swap-vals! !watchers #{}))]
       (tell! watcher (mk-msg this ::terminated)))
     (tell! parent-ref (mk-ctrl-msg this ::terminated)))
-
-  Postman
-  (tell! [this msg]
-    (go (>! (if (ctrl-msg? msg) ctrl-port normal-port)
-            msg)))
-  (<ask! [this msg]
-    ;; TODO: Reply to sender
-    (go (tell! this msg)
-        nil))
 
   MessageFeed
   (normal-port [this] normal-port)
@@ -124,6 +158,10 @@
                   (atom false) (atom #{})))
 
 (deftype BubbleRef []
+  Listening
+  (tell! [this msg]
+    (log! this "was told:" msg))
+
   ActorRef
   (parent [this] nil)
   (get-path [this] "globe:/")
@@ -133,14 +171,6 @@
     (throw (ex-info "You can't escape the bubble!" {:watcher watcher})))
   (reg-death! [this]
     (throw (ex-info "How come the bubble died?!" {})))
-
-  Postman
-  (tell! [this msg]
-    (log! this "was told:" msg))
-  (<ask! [this msg]
-    (log! this "was asked:" msg)
-    ;; TODO: reply to sender
-    (go nil))
 
   Object
   (toString [this]
@@ -159,7 +189,7 @@
 
 (defprotocol ActorParent
   (remove-child! [this child-ref] "Discards the child.")
-  (stop-all-children! [this] "Stops all of its children."))
+  (<stop-all-children! [this] "Stops all of its children."))
 
 (defprotocol SelfProvider
   (self [this] "Returns the self ref."))
@@ -191,10 +221,16 @@
   (remove-child! [this child-ref]
     (log! this "removing child:" child-ref)
     (swap! !children disj child-ref))
-  (stop-all-children! [this]
-    (go (<! (apply <wait-for
-                   (map #(<ask! % (mk-msg self-ref ::stop))
-                        @!children)))))
+  (<stop-all-children! [this]
+    (go
+      (log! self-ref "stopping all children...")
+      (log! self-ref "all children stopped:"
+            (<! (apply
+                 <take-all
+                 (map #(<ask! % (mk-msg self-ref ::stop))
+                      @!children)))
+            (reset! !children #{}))
+      true))
 
   ActorRefWatcher
   (watch [this target-ref]
@@ -220,15 +256,18 @@
   (go [<default-behavior (init-actor ctx)]))
 
 (defn- <stopped-behavior
-  [ctx actor-inst]
+  [stop-sender ctx actor-inst]
   (go
     (let [self-ref (self ctx)]
+      (log! self-ref "stopping requested by:" stop-sender)
       (async/close! (normal-port self-ref))
       (async/close! (ctrl-port self-ref))
       (cleanup actor-inst ctx)
-      (stop-all-children! ctx)
+      (<! (<stop-all-children! ctx))
       (log! self-ref "actor stopped")
-      (reg-death! self-ref))
+      (reg-death! self-ref)
+      (when stop-sender
+        (tell! stop-sender (mk-msg self-ref ::stopped))))
     ::terminate-run-loop))
 
 (defn- <exception-behavior
@@ -248,9 +287,10 @@
   [ctx actor-inst]
   (let [self-ref (self ctx)]
     (go 
-      (when-some [[msg port]
+      (when-some [[msg _port]
                   (async/alts! [(ctrl-port self-ref)
                                 (normal-port self-ref)])]
+        (log! self-ref "got message:" msg)
         (if (ctrl-msg? msg)
           (case (get-msg-subj msg)
             ::terminated
@@ -258,9 +298,9 @@
             [<default-behavior actor-inst])
           (try
             (case (get-msg-subj msg)
-              ::stop [<stopped-behavior actor-inst]
+              ::stop [(partial <stopped-behavior (get-msg-sender msg)) actor-inst]
               (case (handle actor-inst ctx msg)
-                ::stopped [<stopped-behavior actor-inst]
+                ::stopped [(partial <stopped-behavior nil) actor-inst]
                 [<default-behavior actor-inst]))
             (catch Exception e
               [(partial <exception-behavior e) actor-inst])))))))
