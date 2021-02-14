@@ -2,7 +2,12 @@
   (:require
    [clojure.core.async :as async :refer [<! >! chan go go-loop]]
    [clojure.core.async.impl.protocols :as async-protocols]
+   [clojure.core.match :refer [match]]
    [clojure.string :as str]))
+
+(defn chan?
+  [x]
+  (satisfies? clojure.core.async.impl.protocols/ReadPort x))
 
 (defn <take-all
   [& chs]
@@ -16,42 +21,20 @@
       result)))
 
 (defn mk-msg
-  ([sender subj]
-   (mk-msg sender subj nil))
-  ([sender subj body]
-   {:from sender
-    :subj subj
-    :body body}))
+  [payload]
+  [false payload])
 
-(defn- ctrl-msg
+(defn mk-signal
+  [payload]
+  [true payload])
+
+(defn- signal?
   [msg]
-  (assoc msg :ctrl? true))
+  (first msg))
 
-(defn- set-msg-sender
-  [msg sender]
-  (assoc msg :from sender))
-
-(defn- mk-ctrl-msg
-  ([sender subj]
-   (mk-ctrl-msg sender subj nil))
-  ([sender subj body]
-   (ctrl-msg (mk-msg sender subj body))))
-
-(defn- ctrl-msg?
+(defn get-payload
   [msg]
-  (:ctrl? msg))
-
-(defn get-msg-sender
-  [msg]
-  (:from msg))
-
-(defn get-msg-subj
-  [msg]
-  (:subj msg))
-
-(defn get-msg-body
-  [msg]
-  (:body msg))
+  (second msg))
 
 (defprotocol ActorRef
   (parent [this] "Returns the parent ref.")
@@ -110,12 +93,12 @@
 (deftype LocalActorRef [parent-ref actor-name normal-port ctrl-port !dead? !watchers]
   Listening
   (tell! [this msg]
-    (go (>! (if (ctrl-msg? msg) ctrl-port normal-port)
-            msg)))
+    (go (>! (if (signal? msg) ctrl-port normal-port)
+            (get-payload msg))))
 
   Replying
   (<ask! [this msg]
-    (let [ch (chan)
+    #_(let [ch (chan)
           timeout-ch (async/timeout 1000)
           reply-ref (mk-reply-ref ch)
           new-msg (set-msg-sender msg reply-ref)]
@@ -133,15 +116,15 @@
   (get-path [this] (str (get-path parent-ref) "/" actor-name))
   (reg-watcher! [this watcher]
     (if @!dead?
-      (tell! watcher (mk-msg this ::terminated))
+      (tell! watcher (mk-msg ::terminated this))
       (swap! !watchers conj watcher)))
   (unreg-watcher! [this watcher]
     (swap! !watchers disj watcher))
   (reg-death! [this]
     (reset! !dead? true)
     (doseq [watcher (first (swap-vals! !watchers #{}))]
-      (tell! watcher (mk-msg this ::terminated)))
-    (tell! parent-ref (mk-ctrl-msg this ::terminated)))
+      (tell! watcher (mk-msg ::terminated this)))
+    (tell! parent-ref (mk-signal ::terminated this)))
 
   MessageFeed
   (normal-port [this] normal-port)
@@ -181,7 +164,7 @@
   (BubbleRef.))
 
 (defprotocol Spawner
-  (spawn! [this actor-name actor-f] "Spawns a new child. Returns the child's actor ref."))
+  (spawn! [this actor-name behaviors props] "Spawns a new child. Returns the child's actor ref."))
 
 (defprotocol ActorRefWatcher
   (watch [this target-ref] "Waits until the target-ref's actor terminates and notifies about it.")
@@ -195,27 +178,102 @@
   (self [this] "Returns the self ref."))
 
 (defprotocol ActorProvider
-  (get-actor-f [this] "Returns the actor constructor fn."))
-
-(defprotocol Actor
-  (init [this ctx] "Bootstraps the actor.")
-  (handle [this ctx msg] "Handles the message.")
-  (cleanup [this ctx] "Cleans up resources, saves the state."))
+  (get-props [this] "Returns the actor's props.")
+  (get-behavior [this id] "Returns the behavior for the given `id`."))
 
 (declare spawn-actor!)
 
-(deftype ActorContext [self-ref actor-f !children]
+(defn- ctx-rcv
+  [ctx]
+  (go 
+    (let [self-ref (self ctx)
+          [msg _port] (async/alts! [(ctrl-port self-ref)
+                                    (normal-port self-ref)])]
+      (log! self-ref "got message:" msg)
+      msg)))
+
+(defmacro receive
+  [ctx state & clauses]
+  (list 'go
+        (list 'try
+              (concat (list 'match [(list '<! (list 'ctx-rcv ctx))]
+                            [::stop] [::stopped state nil]
+                            [[::stop 'sender]] [::stopped state 'sender]
+                            [[::terminated 'who]] [::terminated state 'who])
+                      clauses)
+              (list 'catch 'Exception 'e
+                    [::exception state 'e]))))
+
+(defn- default-init-behavior
+  [_ctx _props]
+  [::receive nil])
+
+(defn noop-behavior
+  [ctx state]
+  (receive ctx state
+           [ignored-msg]
+           (do
+             (log! (self ctx) "Message ignored:" ignored-msg)
+             nil)))
+
+(defn- default-cleanup-behavior
+  [_ctx _state]
+  [::done nil])
+
+(defn- default-stopped-behavior
+  [ctx state stop-sender]
+  (go
+    (let [self-ref (self ctx)
+          cleanup-behavior (get-behavior ctx ::cleanup)]
+      (log! self-ref "stopping requested by:" stop-sender)
+      (async/close! (normal-port self-ref))
+      (async/close! (ctrl-port self-ref))
+      (cleanup-behavior ctx state)
+      (<! (<stop-all-children! ctx))
+      (log! self-ref "actor stopped")
+      (reg-death! self-ref)
+      (when stop-sender
+        (tell! stop-sender (mk-msg [::stopped self-ref]))))
+    ::terminate-run-loop))
+
+(defn- default-terminated-behavior
+  [ctx state who]
+  (go (remove-child! ctx who)
+      [::receive state]))
+
+(defn- default-exception-behavior
+  [ctx state e]
+  (go
+    (log! (self ctx) "exception:" e)
+    (log! (self ctx) "actor will restart")
+    (let [cleanup-behavior (get-behavior ctx ::cleanup)
+          init-behavior (get-behavior ctx ::init)
+          props (get-props ctx)]
+      (cleanup-behavior ctx state)
+      [::receive (init-behavior ctx props)])))
+
+(def ^:private default-behaviors
+  {::init default-init-behavior
+   ::receive noop-behavior
+   ::cleanup default-cleanup-behavior
+   ::stopped default-stopped-behavior
+   ::terminated default-terminated-behavior
+   ::exception default-exception-behavior})
+
+(deftype ActorContext [self-ref behaviors props !children]
   SelfProvider
   (self [this] self-ref)
 
   ActorProvider
-  (get-actor-f [this] actor-f)
+  (get-props [this] props)
+  (get-behavior [this id]
+    (get (merge default-behaviors behaviors) id))
 
   Spawner
-  (spawn! [this actor-name actor-f]
+  (spawn! [this actor-name behaviors props]
     (let [child-ref (mk-local-actor-ref self-ref actor-name)]
       (swap! !children conj child-ref)
-      (spawn-actor! child-ref actor-f)))
+      (spawn-actor! child-ref behaviors props)))
 
   ActorParent
   (remove-child! [this child-ref]
@@ -227,7 +285,7 @@
       (log! self-ref "all children stopped:"
             (<! (apply
                  <take-all
-                 (map #(<ask! % (mk-msg self-ref ::stop))
+                 (map #(<ask! % (mk-msg [::stop self-ref]))
                       @!children)))
             (reset! !children #{}))
       true))
@@ -239,185 +297,129 @@
     (unreg-watcher! target-ref self-ref)))
 
 (defn- mk-actor-context
-  [self-ref actor-f]
-  (ActorContext. self-ref actor-f (atom #{})))
-
-(defn- init-actor
-  [ctx]
-  (let [actor-f (get-actor-f ctx)
-        actor-inst (actor-f)]
-    (init actor-inst ctx)
-    actor-inst))
-
-(declare <default-behavior)
-
-(defn- <init-behavior
-  [ctx _actor-inst]
-  (go [<default-behavior (init-actor ctx)]))
-
-(defn- <stopped-behavior
-  [stop-sender ctx actor-inst]
-  (go
-    (let [self-ref (self ctx)]
-      (log! self-ref "stopping requested by:" stop-sender)
-      (async/close! (normal-port self-ref))
-      (async/close! (ctrl-port self-ref))
-      (cleanup actor-inst ctx)
-      (<! (<stop-all-children! ctx))
-      (log! self-ref "actor stopped")
-      (reg-death! self-ref)
-      (when stop-sender
-        (tell! stop-sender (mk-msg self-ref ::stopped))))
-    ::terminate-run-loop))
-
-(defn- <exception-behavior
-  [e ctx actor-inst]
-  (go
-    (log! (self ctx) "exception:" e)
-    (log! (self ctx) "actor will restart")
-    (cleanup actor-inst ctx)
-    [<default-behavior (init-actor ctx)]))
-
-(defn- <terminated-behavior
-  [child-ref ctx actor-inst]
-  (go (remove-child! ctx child-ref)
-      [<default-behavior actor-inst]))
-
-(defn- <default-behavior
-  [ctx actor-inst]
-  (let [self-ref (self ctx)]
-    (go 
-      (when-some [[msg _port]
-                  (async/alts! [(ctrl-port self-ref)
-                                (normal-port self-ref)])]
-        (log! self-ref "got message:" msg)
-        (if (ctrl-msg? msg)
-          (case (get-msg-subj msg)
-            ::terminated
-            [(partial <terminated-behavior (get-msg-sender msg)) actor-inst]
-            [<default-behavior actor-inst])
-          (try
-            (case (get-msg-subj msg)
-              ::stop [(partial <stopped-behavior (get-msg-sender msg)) actor-inst]
-              (case (handle actor-inst ctx msg)
-                ::stopped [(partial <stopped-behavior nil) actor-inst]
-                [<default-behavior actor-inst]))
-            (catch Exception e
-              [(partial <exception-behavior e) actor-inst])))))))
+  [self-ref behaviors props]
+  (ActorContext. self-ref behaviors props (atom #{})))
 
 (defn- run-loop!
   [ctx]
-  (go-loop [[behavior actor-inst]
-            [<init-behavior nil]]
-    (let [result (<! (behavior ctx actor-inst))]
-      (case result
-        ::terminate-run-loop (log! (self ctx) "run loop terminated")
-        (recur result)))))
+  (go-loop [behavior (get-behavior ctx ::init)
+            state [(get-props ctx)]]
+    (let [call-result (apply behavior ctx state)
+          read-result (if (chan? call-result) (<! call-result) call-result)
+
+          [next-behavior & next-state]
+          (cond 
+            (nil? read-result) [behavior state]
+            (fn? read-result) [read-result state]
+            (vector? read-result) read-result)]
+      (if (= next-behavior ::terminate-run-loop)
+        (log! (self ctx) "run loop terminated")
+        (recur (if (fn? next-behavior)
+                 next-behavior
+                 (get-behavior ctx next-behavior))
+               next-state)))))
 
 (defn- spawn-actor!
-  [self-ref actor-f]
-  (run-loop! (mk-actor-context self-ref actor-f))
+  [self-ref behaviors props]
+  (run-loop! (mk-actor-context self-ref behaviors props))
   self-ref)
 
-(def ^:private user-subsystem-default-state
-  {:main-actor-ref nil})
+(defn- user-guard-receive-behavior
+  [ctx {:keys [main-actor-ref] :as state}]
+  (receive ctx state
+           [[::terminated main-actor-ref]]
+           (do
+             (log! (self ctx) "Main actor is dead. Stopping the user guard...")
+             [::stopped state nil])
+           :else [::receive state]))
 
-(deftype UserSubsystem [actor-name actor-f result-ch !state]
-  Actor
-  (init [this ctx]
-    (log! (self ctx) "In user subsystem init...")
-    (let [main-actor-ref (spawn! ctx actor-name actor-f)]
-      (go (>! result-ch main-actor-ref)
-          (async/close! result-ch))
-      (swap! !state assoc :main-actor-ref main-actor-ref)
-      (watch ctx main-actor-ref)))
-  (handle [this ctx msg]
-    (case (get-msg-subj msg)
-      ::terminated
-      (when (= (get-msg-sender msg) (:main-actor-ref @!state))
-        (log! (self ctx) "Main actor is dead. Stopping the user guard...")
-        ::stopped)
-      nil))
-  (cleanup [this ctx]
-    (when-some [main-actor-ref (:main-actor-ref @!state)]
-      (unwatch ctx main-actor-ref))
-    (reset! !state user-subsystem-default-state)))
+(defn- user-guard-init-behavior
+  [ctx [result-ch actor-name behavior-m actor-args]]
+  (log! (self ctx) "In user subsystem init...")
+  (let [main-actor-ref (spawn! ctx actor-name behavior-m actor-args)]
+    (go (>! result-ch main-actor-ref)
+        (async/close! result-ch))
+    (watch ctx main-actor-ref)
+    [user-guard-receive-behavior {:main-actor-ref main-actor-ref}]))
 
-(defn- mk-user-subsystem
-  [actor-name actor-f result-ch]
-  (UserSubsystem. actor-name actor-f result-ch
-                  (atom user-subsystem-default-state)))
+(defn- user-guard-cleanup-behavior
+  [ctx {:keys [main-actor-ref] :as state}]
+  (when main-actor-ref (unwatch ctx main-actor-ref))
+  [::done (assoc state :main-actor-ref nil)])
 
-(def ^:private actor-system-default-state
-  {:user-guard-ref nil})
+(def ^:private user-guard
+  {::init user-guard-init-behavior
+   ::receive user-guard-receive-behavior
+   ::cleanup user-guard-cleanup-behavior})
 
-(deftype ActorSystem [actor-name actor-f result-ch !state]
-  Actor
-  (init [this ctx]
-    (log! (self ctx) "In actor system init...")
-    (let [user-guard-ref
-          (spawn! ctx "user" (partial mk-user-subsystem actor-name actor-f result-ch))]
-      (swap! !state assoc :user-guard-ref user-guard-ref)
-      (watch ctx user-guard-ref)))
-  (handle [this ctx msg]
-    (case (get-msg-subj msg)
-      ::terminated
-      (when (= (get-msg-sender msg) (:user-guard-ref @!state))
-        (log! (self ctx) "The user guard is dead. Stopping the actor system...")
-        ::stopped)
-      nil))
-  (cleanup [this ctx]
-    (when-some [user-guard-ref (:user-guard-ref @!state)]
-      (unwatch ctx user-guard-ref))
-    (reset! !state actor-system-default-state)))
+(defn- actor-system-receive-behavior
+  [ctx {:keys [user-guard-ref] :as state}]
+  (receive ctx state
+         [[::terminated user-guard-ref]]
+         (do
+           (log! (self ctx) "The user guard is dead. Stopping the actor system...")
+           [::stopped state nil])
+         :else [::receive state]))
 
-(defn- mk-actor-system
-  [actor-name actor-f result-ch]
-  (ActorSystem. actor-name actor-f result-ch
-                (atom actor-system-default-state)))
+(defn- actor-system-init-behavior
+  [ctx [result-ch actor-name behavior-m actor-args]]
+  (log! (self ctx) "In actor system init...")
+  (let [user-guard-ref
+        (spawn! ctx "user" user-guard [result-ch actor-name behavior-m actor-args])]
+    (watch ctx user-guard-ref)
+    [::receive {:user-guard-ref user-guard-ref}]))
+
+(defn- actor-system-cleanup-behavior
+  [ctx {:keys [user-guard-ref] :as state}]
+  (when user-guard-ref (unwatch ctx user-guard-ref))
+  [::done (assoc state :user-guard-ref nil)])
+
+(def ^:private actor-system
+  {::init actor-system-init-behavior
+   ::receive actor-system-receive-behavior
+   ::cleanup actor-system-cleanup-behavior})
 
 (defn <start-system!
-  [actor-name actor-f]
+  [actor-name behavior-m actor-args]
   (let [result-ch (chan)]
     (spawn-actor! (mk-local-actor-ref (mk-bubble-ref) "system@localhost")
-                  (partial mk-actor-system actor-name actor-f result-ch))
+                  actor-system [result-ch actor-name behavior-m actor-args])
     result-ch))
 
 (comment
-  (deftype MyHero []
-    Actor
-    (init [this ctx]
-      (log! (self ctx) "In MyHero init..."))
-    (handle [this ctx msg])
-    (cleanup [this ctx]))
-
-  (defn mk-my-hero
-    []
-    (MyHero.))
+  (defn my-hero-init-behavior
+    [ctx _props]
+    (log! (self ctx) "In MyHero init...")
+    noop-behavior)
   
-  (deftype Greeter [greeting !x]
-    Actor
-    (init [this ctx]
-      (log! (self ctx) "In greeter init...")
-      (spawn! ctx "my-hero" mk-my-hero))
-    (handle [this ctx msg]
-      (case (get-msg-subj msg)
-        :greet (log! (self ctx)
-                     (format "%s %s!" greeting (get-msg-body msg)))
-        :stop ::stopped
-        nil))
-    (cleanup [this ctx]))
+  (def my-hero
+    {::init my-hero-init-behavior})
 
-  (defn mk-greeter
-    [greeting]
-    (Greeter. greeting (atom 0)))
+  (defn greeter-receive-behavior
+    [ctx state]
+    (receive
+     ctx state
+     [[:greet who]]
+     (do
+       (println (format "%s %s!" (:greeting state) who))
+       [greeter-receive-behavior state])
+     :else [::receive state]))
+
+  (defn greeter-init-behavior
+    [ctx [greeting]]
+    (spawn! ctx "my-hero" my-hero [])
+    [::receive {:greeting greeting :x 0}])
+
+  (def greeter
+    {::init greeter-init-behavior
+     ::receive greeter-receive-behavior})
 
   (def !main-actor-ref (atom nil))
 
-  (go (reset! !main-actor-ref (<! (<start-system! "greeter" (partial mk-greeter "Hello")))))
+  (go (reset! !main-actor-ref (<! (<start-system! "greeter" greeter ["Hello"]))))
   
-  (tell! @!main-actor-ref (mk-msg nil :greet "Andrey"))
-  (tell! @!main-actor-ref (mk-msg nil :stop))
+  (tell! @!main-actor-ref (mk-msg [:greet "Andrey"]))
+  (tell! @!main-actor-ref (mk-msg ::stop))
 
   (tap> @!main-actor-ref)
 
