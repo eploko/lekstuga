@@ -244,19 +244,18 @@
 
 (defn- default-child-terminated-behavior
   [ctx state who]
-  (go (remove-child! ctx who)
-      [::receive state]))
+  (remove-child! ctx who)
+  [::receive state])
 
 (defn- default-exception-behavior
   [ctx state e]
-  (go
-    (log! (self ctx) "exception:" e)
-    (log! (self ctx) "actor will restart")
-    (let [cleanup-behavior (get-behavior ctx ::cleanup)
-          init-behavior (get-behavior ctx ::init)
-          props (get-props ctx)]
-      (cleanup-behavior ctx state)
-      [::receive (init-behavior ctx props)])))
+  (log! (self ctx) "exception:" e)
+  (log! (self ctx) "actor will restart")
+  (let [cleanup-behavior (get-behavior ctx ::cleanup)
+        init-behavior (get-behavior ctx ::init)
+        props (get-props ctx)]
+    (cleanup-behavior ctx state)
+    [::receive (init-behavior ctx props)]))
 
 (def ^:private default-behaviors
   {::init default-init-behavior
