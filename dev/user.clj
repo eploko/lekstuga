@@ -1,2 +1,4 @@
-(ns user)
+(ns user
+  (:require
+   [globe.core]))
 

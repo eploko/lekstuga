@@ -1,24 +1,8 @@
-(ns eploko.globe5
-  (:require
-   [clojure.core.async :as async :refer [<! >! chan go go-loop]]
-   [clojure.core.async.impl.protocols :as async-protocols]
-   [clojure.core.match :refer [match]]
-   [clojure.string :as str]))
-
-(defn chan?
-  [x]
-  (satisfies? clojure.core.async.impl.protocols/ReadPort x))
-
-(defn <take-all
-  [& chs]
-  (go-loop [result []
-            chs chs]
-    (if (seq? chs)
-      (let [[v port] (async/alts! chs)]
-        (if (nil? v)
-          (recur result (seq (remove #{port} chs)))
-          (recur (conj result v) chs)))
-      result)))
+(ns globe.core
+  (:require [clojure.core.async :as async :refer [<! >! chan go go-loop]]
+            [clojure.core.match :refer [match]]
+            [clojure.string :as str]
+            [globe.async :refer [<take-all chan? unbound-buf]]))
 
 (defn- mk-emsg
   ([signal? payload]
@@ -62,26 +46,6 @@
        (str/join " ")
        (format "%s: %s" actor-ref)
        println))
-
-(deftype UnboundBuffer [!buf]
-  async-protocols/Buffer
-  (full? [this]
-    false)
-  (remove! [this]
-    (ffirst (swap-vals! !buf pop)))
-  (add!* [this itm]
-    (swap! !buf conj itm))
-  (close-buf! [this] (reset! !buf []))
-  clojure.lang.Counted
-  (count [this]
-    (count @!buf))
-  clojure.lang.IDeref
-  (deref [this]
-    @!buf))
-
-(defn unbound-buf
-  []
-  (UnboundBuffer. (atom [])))
 
 (defprotocol MessageFeed
   (normal-port [this] "Returns the normal port.")
