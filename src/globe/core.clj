@@ -1,31 +1,9 @@
 (ns globe.core
   (:require [clojure.core.async :as async :refer [<! >! chan go go-loop]]
             [clojure.core.match :refer [match]]
+            [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [globe.async :refer [<take-all chan? unbound-buf]]))
-
-(defn- mk-emsg
-  ([signal? payload]
-   (mk-emsg signal? nil payload))
-  ([signal? sender payload]
-   [signal? [sender payload]]))
-
-(def mk-msg (partial mk-emsg false))
-(def mk-signal (partial mk-emsg true))
-
-(defn- signal?
-  [msg]
-  (first msg))
-
-(defn get-msg-body
-  [msg]
-  (second msg))
-
-(defn set-msg-sender
-  [msg sender]
-  [(first msg) (vec (cons sender (next (second msg))))])
-
-(set-msg-sender (mk-msg ["hef" :hhhe]) "to")
 
 (defprotocol ActorRef
   (parent [this] "Returns the parent ref.")
@@ -39,6 +17,16 @@
 
 (defprotocol Replying
   (<ask! [this msg] "Sends the message and waits for a reply"))
+
+(defn actor-ref?
+  [x]
+  (satisfies? ActorRef x))
+
+(s/def ::body some?)
+(s/def ::from actor-ref?)
+(s/def ::signal? true?)
+(s/def ::msg (s/keys :req-un [::body]
+                     :opt-un [::from ::signal?]))
 
 (defn log!
   [actor-ref & args]
@@ -64,16 +52,16 @@
 (deftype LocalActorRef [parent-ref actor-name normal-port ctrl-port !dead? !watchers]
   Listening
   (tell! [this msg]
-    (go (>! (if (signal? msg) ctrl-port normal-port)
-            (get-msg-body msg))))
+    {:pre [(s/valid? ::msg msg)]}
+    (go (>! (if (:signal? msg) ctrl-port normal-port)
+            (:body msg))))
 
   Replying
   (<ask! [this msg]
+    {:pre [(s/valid? ::msg msg)]}
     (let [ch (chan)
-          timeout-ch (async/timeout 1000)
-          reply-ref (mk-reply-ref ch)
-          new-msg (set-msg-sender msg reply-ref)]
-      (tell! this new-msg)
+          timeout-ch (async/timeout 1000)]
+      (tell! this (assoc msg :from (mk-reply-ref ch)))
       (go
         (let [[v p] (async/alts! [ch timeout-ch])]
           (if (= p timeout-ch)
@@ -87,15 +75,15 @@
   (get-path [this] (str (get-path parent-ref) "/" actor-name))
   (reg-watcher! [this watcher]
     (if @!dead?
-      (tell! watcher (mk-msg this ::terminated))
+      (tell! watcher {:from this :body ::terminated})
       (swap! !watchers conj watcher)))
   (unreg-watcher! [this watcher]
     (swap! !watchers disj watcher))
   (reg-death! [this]
     (reset! !dead? true)
     (doseq [watcher (first (swap-vals! !watchers #{}))]
-      (tell! watcher (mk-msg this ::terminated)))
-    (tell! parent-ref (mk-signal this ::child-terminated)))
+      (tell! watcher {:from this :body ::terminated}))
+    (tell! parent-ref {:signal? true :from this :body ::child-terminated}))
 
   MessageFeed
   (normal-port [this] normal-port)
@@ -114,6 +102,7 @@
 (deftype BubbleRef []
   Listening
   (tell! [this msg]
+    {:pre [(s/valid? ::msg msg)]}
     (log! this "was told:" msg))
 
   ActorRef
@@ -168,8 +157,8 @@
   (list 'go
         (list 'try
               (concat (list 'match [(list '<! (list 'ctx-rcv ctx))]
-                            [['sender ::stop]] [::stopped state 'sender]
-                            [['sender ::child-terminated]] [::child-terminated state 'sender])
+                            [{:from 'sender :body ::stop}] [::stopped state 'sender]
+                            [{:from 'sender :body ::child-terminated}] [::child-terminated state 'sender])
                       clauses)
               (list 'catch 'Exception 'e
                     [::exception state 'e]))))
@@ -203,7 +192,7 @@
       (log! self-ref "actor stopped")
       (reg-death! self-ref)
       (when stop-sender
-        (tell! stop-sender (mk-msg self-ref ::stopped))))
+        (tell! stop-sender {:from self-ref :body ::stopped})))
     ::terminate-run-loop))
 
 (defn- default-child-terminated-behavior
@@ -254,7 +243,7 @@
       (log! self-ref "all children stopped:"
             (<! (apply
                  <take-all
-                 (map #(<ask! % (mk-msg ::stop))
+                 (map #(<ask! % {:body ::stop})
                       @!children)))
             (reset! !children #{}))
       true))
@@ -297,7 +286,7 @@
 (defn- user-guard-receive-behavior
   [ctx {:keys [main-actor-ref] :as state}]
   (receive ctx state
-           [[main-actor-ref ::terminated]]
+           [{:from main-actor-ref :body ::terminated}]
            (do
              (log! (self ctx) "Main actor is dead. Stopping the user guard...")
              [::stopped state nil])
@@ -325,7 +314,7 @@
 (defn- actor-system-receive-behavior
   [ctx {:keys [user-guard-ref] :as state}]
   (receive ctx state
-           [[user-guard-ref ::terminated]]
+           [{:from user-guard-ref :body ::terminated}]
            (do
              (log! (self ctx) "The user guard is dead. Stopping the actor system...")
              [::stopped state nil])
@@ -367,13 +356,12 @@
 
   (defn greeter-receive-behavior
     [ctx state]
-    (receive
-     ctx state
-     [[_ [:greet who]]]
-     (do
-       (println (format "%s %s!" (:greeting state) who))
-       [greeter-receive-behavior state])
-     :else [::receive state]))
+    (receive ctx state
+             [{:body [:greet who]}]
+             (do
+               (println (format "%s %s!" (:greeting state) who))
+               [::receive state])
+             :else [::receive state]))
 
   (defn greeter-init-behavior
     [ctx [greeting]]
@@ -388,8 +376,8 @@
 
   (go (reset! !main-actor-ref (<! (<start-system! "greeter" greeter ["Hello"]))))
   
-  (tell! @!main-actor-ref (mk-msg [:greet "Andrey"]))
-  (tell! @!main-actor-ref (mk-msg ::stop))
+  (tell! @!main-actor-ref {:body [:greet "Andrey"]})
+  (tell! @!main-actor-ref {:body ::stop})
 
   (tap> @!main-actor-ref)
 
