@@ -152,21 +152,21 @@
   [ctx]
   (go 
     (let [self-ref (self ctx)
-          [msg _port] (async/alts! [(ctrl-port self-ref)
-                                    (normal-port self-ref)])]
+          [msg _port] (async/alts! [(::signal-port self-ref)
+                                    (::normal-port self-ref)])]
       (log! self-ref "got message:" msg)
       msg)))
 
 (defmacro receive
   [ctx state & clauses]
-  (list 'go
-        (list 'try
-              (concat (list 'match [(list '<! (list 'ctx-rcv ctx))]
-                            [{:from 'sender :body ::stop}] [::stopped state 'sender]
-                            [{:from 'sender :body ::child-terminated}] [::child-terminated state 'sender])
-                      clauses)
-              (list 'catch 'Exception 'e
-                    [::exception state 'e]))))
+  `(go
+     (try
+       (match [(<! (ctx-rcv ~ctx))]
+             [{:from sender# :body ::stop}] [::stopped ~state sender#]
+             [{:from sender# :body ::child-terminated}] [::child-terminated ~state sender#]
+             ~@clauses)
+       (catch Exception e#
+             [::exception ~state e#]))))
 
 (defn- default-init-behavior
   [_ctx _props]
@@ -190,8 +190,8 @@
     (let [self-ref (self ctx)
           cleanup-behavior (get-behavior ctx ::cleanup)]
       (log! self-ref "stopping requested by:" stop-sender)
-      (async/close! (normal-port self-ref))
-      (async/close! (ctrl-port self-ref))
+      (async/close! (::normal-port self-ref))
+      (async/close! (::ctrl-port self-ref))
       (cleanup-behavior ctx state)
       (<! (<stop-all-children! ctx))
       (log! self-ref "actor stopped")
