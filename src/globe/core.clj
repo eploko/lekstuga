@@ -1,21 +1,26 @@
 (ns globe.core
-  (:require [clojure.core.async :as async :refer [<! >! chan go go-loop]]
+  (:require [clj-uuid :as uuid]
+            [clojure.core.async :as async :refer [<! >! chan go go-loop]]
             [clojure.core.match :refer [match]]
             [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [globe.async :refer [<take-all chan? unbound-buf]])
   (:import [clojure.lang Atom]))
 
+(defonce !system-ctx (atom nil))
+
 (defn atom?
   [x]
   (instance? Atom x))
 
 (s/def ::non-empty-string (s/and string? #(> (count %) 0)))
+(s/def ::uuid uuid?)
 (s/def ::port chan?)
 (s/def ::signal-port ::port)
 (s/def ::normal-port ::port)
 (s/def ::scope keyword?)
-(s/def ::id ::non-empty-string)
+(s/def ::id (s/or :string ::non-empty-string
+                  :uuid ::uuid))
 (s/def ::has-id (s/keys :req [::id]))
 (s/def ::parent (s/or :actor-ref ::actor-ref
                       :nil nil?))
@@ -32,7 +37,6 @@
 (s/def ::signal? true?)
 (s/def ::msg (s/keys :req-un [::body]
                      :opt-un [::from ::signal?]))
-
 
 (defmulti get-path
   (fn [actor-ref]
@@ -104,22 +108,6 @@
 (defmethod stop-receiving-messages! :default
   [_actor-ref])
 
-(defn <ask!
-  [actor-ref msg]
-  {:pre [(s/valid? ::actor-ref actor-ref)
-         (s/valid? ::msg msg)]
-   :post [(s/valid? ::port %)]}
-  (let [ch (chan)
-        timeout-ch (async/timeout 1000)]
-    #_(tell! actor-ref (assoc msg :from (mk-reply-ref ch)))
-    #_(go
-      (let [[v p] (async/alts! [ch timeout-ch])]
-        (if (= p timeout-ch)
-          (do
-            (log! actor-ref "<ask! timed out:" msg)
-            nil)
-          v)))))
-
 (defn reg-watcher!
   [actor-ref watcher]
   {:pre [(s/valid? ::actor-ref actor-ref)
@@ -142,18 +130,29 @@
     (tell! watcher {:from actor-ref :body ::terminated}))
   (tell! (::parent actor-ref) {:signal? true :from actor-ref :body ::child-terminated}))
 
-(declare spawn-actor!)
+(declare run-loop!)
+(declare <ask!)
+
+(defn- actor-context
+  [parent self-ref behaviors props]
+  {::parent parent
+   ::self self-ref
+   ::behaviors behaviors
+   ::props props
+   ::children (atom {})})
 
 (defn spawn!
   [ctx actor-name behaviors props]
-  (let [child-ref (local-actor-ref (::self ctx) actor-name)]
-    (swap! (::children ctx) conj child-ref)
-    (spawn-actor! child-ref behaviors props)))
+  (let [child-ref (local-actor-ref (::self ctx) actor-name)
+        child-ctx (actor-context ctx child-ref behaviors props)]
+    (swap! (::children ctx) assoc (::id child-ref) child-ctx)
+    (run-loop! child-ctx)
+    child-ref))
 
 (defn remove-child!
   [ctx child-ref]
   (log! (::self ctx) "removing child:" child-ref)
-  (swap! (::children ctx) disj child-ref))
+  (swap! (::children ctx) dissoc (::id child-ref)))
 
 (defn <stop-all-children!
   [ctx]
@@ -163,16 +162,9 @@
           (<! (apply
                <take-all
                (map #(<ask! % {:body ::stop})
-                    (deref (::children ctx)))))
-          (reset! (::children ctx) #{}))
+                    (map ::self (vals (deref (::children ctx)))))))
+          (reset! (::children ctx) {}))
     true))
-
-(defn- actor-context
-  [self-ref behaviors props]
-  {::self self-ref
-   ::behaviors behaviors
-   ::props props
-   ::children (atom #{})})
 
 (defn- ctx-rcv
   [ctx]
@@ -188,8 +180,8 @@
   `(go
      (try
        (match [(<! (ctx-rcv ~ctx))]
-              [{:body ::stop}] [::stopped ~state nil]
               [{:from sender# :body ::stop}] [::stopped ~state sender#]
+              [{:body ::stop}] [::stopped ~state nil]
               [{:from sender# :body ::child-terminated}] [::child-terminated ~state sender#]
               ~@clauses)
        (catch Exception e#
@@ -268,17 +260,12 @@
             (nil? read-result) [behavior state]
             (fn? read-result) [read-result state]
             (vector? read-result) read-result)]
-      (if (= next-behavior ::terminate-run-loop)
+      (if (= read-result ::terminate-run-loop)
         (log! (::self ctx) "run loop terminated")
         (recur (if (fn? next-behavior)
                  next-behavior
                  (get-behavior ctx next-behavior))
                next-state)))))
-
-(defn- spawn-actor!
-  [self-ref behaviors props]
-  (run-loop! (actor-context self-ref behaviors props))
-  self-ref)
 
 (defn- user-guard-receive-behavior
   [ctx {:keys [main-actor-ref] :as state}]
@@ -308,6 +295,14 @@
    ::receive user-guard-receive-behavior
    ::cleanup user-guard-cleanup-behavior})
 
+(defn- temp-guard-receive-behavior
+  [ctx state]
+  (receive ctx state
+           :else [::receive state]))
+
+(def ^:private temp-guard
+  {::receive temp-guard-receive-behavior})
+
 (defn- actor-system-receive-behavior
   [ctx {:keys [user-guard-ref] :as state}]
   (receive ctx state
@@ -322,6 +317,7 @@
   (log! (::self ctx) "In actor system init...")
   (let [user-guard-ref
         (spawn! ctx "user" user-guard [result-ch actor-name behavior-m actor-args])]
+    (spawn! ctx "temp" temp-guard nil)
     (reg-watcher! user-guard-ref (::self ctx))
     [::receive {:user-guard-ref user-guard-ref}]))
 
@@ -337,16 +333,72 @@
 
 (defn <start-system!
   [actor-name behavior-m actor-args]
-  (let [result-ch (chan)]
-    (spawn-actor! (local-actor-ref (bubble-ref) "system@localhost")
-                  actor-system [result-ch actor-name behavior-m actor-args])
+  (let [result-ch (chan)
+        system-ref (local-actor-ref (bubble-ref) "system@localhost")
+        system-props [result-ch actor-name behavior-m actor-args]
+        system-ctx (actor-context nil system-ref actor-system system-props)]
+    (reset! !system-ctx system-ctx)
+    (run-loop! system-ctx)
     result-ch))
+
+(defn get-system-ctx
+  []
+  (deref !system-ctx))
+
+(defn find-child
+  [ctx id]
+  (let [children (deref (::children ctx))]
+    (children id)))
+
+(defn ask-actor-init-behavior
+  [ctx {:keys [target msg reply-ch]}]
+  (tell! target (assoc msg :from (::self ctx)))
+  [::receive {:target target
+              :reply-ch reply-ch}])
+
+(defn ask-actor-receive-behavior
+  [ctx {:as state
+        :keys [target reply-ch]}]
+  (receive ctx state
+           [{:from target :body body}]
+           (do
+             (go (>! reply-ch body)
+                 (async/close! reply-ch))
+             [::stopped nil nil])
+           :else [::receive state]))
+
+(def ask-actor-behaviors
+  {::init ask-actor-init-behavior
+   ::receive ask-actor-receive-behavior})
+
+(defn <ask!
+  ([actor-ref msg]
+   (<ask! actor-ref 5000 msg))
+  ([actor-ref timeout-ms msg]
+   {:pre [(s/valid? ::actor-ref actor-ref)
+          (s/valid? ::msg msg)]
+    :post [(s/valid? ::port %)]}
+   (let [temp-ctx (find-child (get-system-ctx) "temp")
+         ch (chan)
+         timeout-ch (async/timeout timeout-ms)]
+     (spawn! temp-ctx (uuid/v4) ask-actor-behaviors
+             {:target actor-ref
+              :msg msg
+              :reply-ch ch})
+     (go
+       (let [[v p] (async/alts! [ch timeout-ch])]
+         (if (= p timeout-ch)
+           (do
+             (log! actor-ref "<ask! timed out:" msg)
+             (async/close! ch)
+             :timeout)
+           v))))))
 
 (comment
   (defn my-hero-init-behavior
     [ctx _props]
     (log! (::self ctx) "In MyHero init...")
-    noop-behavior)
+    [::receive nil])
   
   (def my-hero
     {::init my-hero-init-behavior})
