@@ -33,11 +33,27 @@
 (s/def ::msg (s/keys :req-un [::body]
                      :opt-un [::from ::signal?]))
 
+
+(defmulti get-path
+  (fn [actor-ref]
+    {:pre [(s/valid? ::actor-ref actor-ref)]}
+    (::scope actor-ref)))
+
+(defmethod get-path :local
+  [actor-ref]
+  {:pre [(s/valid? ::actor-ref actor-ref)]}
+  (str (get-path (::parent actor-ref)) "/" (::id actor-ref)))
+
+(defmethod get-path :bubble
+  [actor-ref]
+  {:pre [(s/valid? ::actor-ref actor-ref)]}
+  "globe:/")
+
 (defn log!
   [actor-ref & args]
   (->> args
        (str/join " ")
-       (format "%s: %s" actor-ref)
+       (format "%s: %s" (get-path actor-ref))
        println))
 
 (defn local-actor-ref
@@ -64,12 +80,12 @@
   (fn [actor-ref msg]
     {:pre [(s/valid? ::actor-ref actor-ref)
            (s/valid? ::msg msg)]}
-    (:scope actor-ref)))
+    (::scope actor-ref)))
 
 (defmethod tell! :local
   [actor-ref msg]
   (go (>! (actor-ref (if (:signal? msg) ::signal-port ::normal-port))
-          (:body msg))))
+          msg)))
 
 (defmethod tell! :bubble
   [actor-ref msg]
@@ -90,21 +106,6 @@
             (log! actor-ref "<ask! timed out:" msg)
             nil)
           v)))))
-
-(defmulti get-path
-  (fn [actor-ref]
-    {:pre [(s/valid? ::actor-ref actor-ref)]}
-    (:scope actor-ref)))
-
-(defmethod get-path :local
-  [actor-ref]
-  {:pre [(s/valid? ::actor-ref actor-ref)]}
-  (str (get-path (::parent actor-ref)) "/" (::id actor-ref)))
-
-(defmethod get-path :bubble
-  [actor-ref]
-  {:pre [(s/valid? ::actor-ref actor-ref)]}
-  "globe:/")
 
 (defn reg-watcher!
   [actor-ref watcher]
