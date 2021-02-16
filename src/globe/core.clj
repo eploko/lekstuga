@@ -3,27 +3,32 @@
             [clojure.core.match :refer [match]]
             [clojure.spec.alpha :as s]
             [clojure.string :as str]
-            [globe.async :refer [<take-all chan? unbound-buf]]))
+            [globe.async :refer [<take-all chan? unbound-buf]])
+  (:import [clojure.lang Atom]))
 
-(defprotocol ActorRef
-  (parent [this] "Returns the parent ref.")
-  (get-path [this] "Returns its path.")
-  (reg-watcher! [this actor-ref] "Registers a watcher.")
-  (unreg-watcher! [this actor-ref] "Unregisters a watcher.")
-  (reg-death! [this] "Notifies watchers the actor is dead."))
-
-(defprotocol Listening
-  (tell! [this msg] "Sends the message to the underlying actor."))
-
-(defprotocol Replying
-  (<ask! [this msg] "Sends the message and waits for a reply"))
-
-(defn actor-ref?
+(defn atom?
   [x]
-  (satisfies? ActorRef x))
+  (instance? Atom x))
 
+(s/def ::non-empty-string (s/and string? #(> (count %) 0)))
+(s/def ::port chan?)
+(s/def ::signal-port ::port)
+(s/def ::normal-port ::port)
+(s/def ::scope keyword?)
+(s/def ::id ::non-empty-string)
+(s/def ::has-id (s/keys :req [::id]))
+(s/def ::parent (s/or :actor-ref ::actor-ref
+                      :nil nil?))
+(s/def ::watchers atom?)
+(s/def ::dead? atom?)
+(s/def ::local-actor-ref
+  (s/keys :req [::scope ::id ::parent ::signal-port ::normal-port ::dead? ::watchers]))
+(s/def ::bubble-ref
+  (s/keys :req [::scope ::dead? ::watchers]))
+(s/def ::actor-ref (s/or :bubble-ref ::bubble-ref
+                         :local-actor-ref ::local-actor-ref))
 (s/def ::body some?)
-(s/def ::from actor-ref?)
+(s/def ::from ::actor-ref)
 (s/def ::signal? true?)
 (s/def ::msg (s/keys :req-un [::body]
                      :opt-un [::from ::signal?]))
@@ -35,93 +40,93 @@
        (format "%s: %s" actor-ref)
        println))
 
-(defprotocol MessageFeed
-  (normal-port [this] "Returns the normal port.")
-  (ctrl-port [this] "Returns the ctrl port."))
+(defn local-actor-ref
+  [parent id]
+  {:pre [(s/valid? ::parent parent)
+         (s/valid? ::id id)]
+   :post [(s/valid? ::actor-ref %)]}
+  {::scope :local
+   ::id id
+   ::parent parent
+   ::signal-port (chan (unbound-buf))
+   ::normal-port (chan (unbound-buf))
+   ::dead? (atom false)
+   ::watchers (atom #{})})
 
-(deftype ReplyRef [out-ch]
-  Listening
-  (tell! [this msg]
-    (go (>! out-ch msg)
-        (async/close! out-ch))))
-
-(defn- mk-reply-ref
- [ch]
- (ReplyRef. ch))
-
-(deftype LocalActorRef [parent-ref actor-name normal-port ctrl-port !dead? !watchers]
-  Listening
-  (tell! [this msg]
-    {:pre [(s/valid? ::msg msg)]}
-    (go (>! (if (:signal? msg) ctrl-port normal-port)
-            (:body msg))))
-
-  Replying
-  (<ask! [this msg]
-    {:pre [(s/valid? ::msg msg)]}
-    (let [ch (chan)
-          timeout-ch (async/timeout 1000)]
-      (tell! this (assoc msg :from (mk-reply-ref ch)))
-      (go
-        (let [[v p] (async/alts! [ch timeout-ch])]
-          (if (= p timeout-ch)
-            (do
-              (log! this "<ask! timed out:" msg)
-              nil)
-            v)))))
-  
-  ActorRef
-  (parent [this] parent-ref)
-  (get-path [this] (str (get-path parent-ref) "/" actor-name))
-  (reg-watcher! [this watcher]
-    (if @!dead?
-      (tell! watcher {:from this :body ::terminated})
-      (swap! !watchers conj watcher)))
-  (unreg-watcher! [this watcher]
-    (swap! !watchers disj watcher))
-  (reg-death! [this]
-    (reset! !dead? true)
-    (doseq [watcher (first (swap-vals! !watchers #{}))]
-      (tell! watcher {:from this :body ::terminated}))
-    (tell! parent-ref {:signal? true :from this :body ::child-terminated}))
-
-  MessageFeed
-  (normal-port [this] normal-port)
-  (ctrl-port [this] ctrl-port)
-
-  Object
-  (toString [this]
-    (get-path this)))
-
-(defn mk-local-actor-ref
-  [parent-ref actor-name]
-  (LocalActorRef. parent-ref actor-name
-                  (chan (unbound-buf)) (chan (unbound-buf))
-                  (atom false) (atom #{})))
-
-(deftype BubbleRef []
-  Listening
-  (tell! [this msg]
-    {:pre [(s/valid? ::msg msg)]}
-    (log! this "was told:" msg))
-
-  ActorRef
-  (parent [this] nil)
-  (get-path [this] "globe:/")
-  (reg-watcher! [this watcher]
-    (throw (ex-info "Bubble never dies!" {:watcher watcher})))
-  (unreg-watcher! [this watcher]
-    (throw (ex-info "You can't escape the bubble!" {:watcher watcher})))
-  (reg-death! [this]
-    (throw (ex-info "How come the bubble died?!" {})))
-
-  Object
-  (toString [this]
-    (get-path this)))
-
-(defn- mk-bubble-ref
+(defn bubble-ref
   []
-  (BubbleRef.))
+  {:post [(s/valid? ::actor-ref %)]}
+  {::scope :bubble
+   ::dead? (atom false)
+   ::watchers (atom #{})})
+
+(defmulti tell!
+  (fn [actor-ref msg]
+    {:pre [(s/valid? ::actor-ref actor-ref)
+           (s/valid? ::msg msg)]}
+    (:scope actor-ref)))
+
+(defmethod tell! :local
+  [actor-ref msg]
+  (go (>! (actor-ref (if (:signal? msg) ::signal-port ::normal-port))
+          (:body msg))))
+
+(defmethod tell! :bubble
+  [actor-ref msg]
+  (log! actor-ref "was told:" msg))
+
+(defn <ask!
+  [actor-ref msg]
+  {:pre [(s/valid? ::actor-ref actor-ref)
+         (s/valid? ::msg msg)]
+   :post [(s/valid? ::port %)]}
+  (let [ch (chan)
+        timeout-ch (async/timeout 1000)]
+    #_(tell! actor-ref (assoc msg :from (mk-reply-ref ch)))
+    #_(go
+      (let [[v p] (async/alts! [ch timeout-ch])]
+        (if (= p timeout-ch)
+          (do
+            (log! actor-ref "<ask! timed out:" msg)
+            nil)
+          v)))))
+
+(defmulti get-path
+  (fn [actor-ref]
+    {:pre [(s/valid? ::actor-ref actor-ref)]}
+    (:scope actor-ref)))
+
+(defmethod get-path :local
+  [actor-ref]
+  {:pre [(s/valid? ::actor-ref actor-ref)]}
+  (str (get-path (::parent actor-ref)) "/" (::id actor-ref)))
+
+(defmethod get-path :bubble
+  [actor-ref]
+  {:pre [(s/valid? ::actor-ref actor-ref)]}
+  "globe:/")
+
+(defn reg-watcher!
+  [actor-ref watcher]
+  {:pre [(s/valid? ::actor-ref actor-ref)
+         (s/valid? ::actor-ref watcher)]}
+  (if (deref (::dead? actor-ref))
+    (tell! watcher {:from actor-ref :body ::terminated})
+    (swap! (::watchers actor-ref) conj watcher)))
+
+(defn unreg-watcher!
+  [actor-ref watcher]
+  {:pre [(s/valid? ::actor-ref actor-ref)
+         (s/valid? ::actor-ref watcher)]}
+  (swap! (::watchers actor-ref) disj watcher))
+
+(defn reg-death!
+  [actor-ref]
+  {:pre [(s/valid? ::actor-ref actor-ref)]}
+  (reset! (::dead? actor-ref) true)
+  (doseq [watcher (first (swap-vals! (::watchers actor-ref) #{}))]
+    (tell! watcher {:from actor-ref :body ::terminated}))
+  (tell! (::parent actor-ref) {:signal? true :from actor-ref :body ::child-terminated}))
 
 (defprotocol Spawner
   (spawn! [this actor-name behaviors props] "Spawns a new child. Returns the child's actor ref."))
@@ -229,7 +234,7 @@
 
   Spawner
   (spawn! [this actor-name behaviors props]
-    (let [child-ref (mk-local-actor-ref self-ref actor-name)]
+    (let [child-ref (local-actor-ref self-ref actor-name)]
       (swap! !children conj child-ref)
       (spawn-actor! child-ref behaviors props)))
 
@@ -341,7 +346,7 @@
 (defn <start-system!
   [actor-name behavior-m actor-args]
   (let [result-ch (chan)]
-    (spawn-actor! (mk-local-actor-ref (mk-bubble-ref) "system@localhost")
+    (spawn-actor! (local-actor-ref (bubble-ref) "system@localhost")
                   actor-system [result-ch actor-name behavior-m actor-args])
     result-ch))
 
