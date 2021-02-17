@@ -146,6 +146,7 @@
    ::self self-ref
    ::behaviors behaviors
    ::props props
+   ::state (atom props)
    ::children (atom {})})
 
 (defn spawn!
@@ -173,18 +174,18 @@
       msg)))
 
 (defmacro receive
-  [ctx state & clauses]
+  [ctx & clauses]
   `(go
      (try
        (match [(<! (ctx-rcv ~ctx))]
-              [{:from sender# :body ::stop}] [::stopped ~state {:requested-by sender#}]
-              [{:body ::stop}] [::stopped ~state]
+              [{:from sender# :body ::stop}] [::stopped {:requested-by sender#}]
+              [{:body ::stop}] ::stopped
               [{:from sender# :body ::child-terminated}]
               (do (remove-child! ~ctx sender#)
                   ::same)
               ~@clauses)
        (catch Exception e#
-         [::exception ~state e#]))))
+         [::exception e#]))))
 
 (declare default-behaviors)
 
@@ -193,12 +194,12 @@
   (get (merge default-behaviors (::behaviors ctx)) id))
 
 (defn- default-init-behavior
-  [_ctx _props]
-  [::receive nil])
+  [_ctx _state]
+  ::receive)
 
 (defn noop-behavior
-  [ctx state]
-  (receive ctx state
+  [ctx _state]
+  (receive ctx
            [ignored-msg]
            (do
              (log! (::self ctx) "Message ignored:" ignored-msg)
@@ -206,16 +207,21 @@
 
 (defn- default-cleanup-behavior
   [_ctx _state]
-  [::done nil])
+  ::done)
 
 (defn- default-stopping-children-behavior
-  [ctx state opts]
+  [ctx _state opts]
   (go
-    (let [receive-result (<! (receive ctx state))]
-      (log! (::self ctx) "REC RES IN STOPPING ALL CHILDREN:" receive-result)
-      (if (and (= ::same receive-result)
-               (not (seq? (deref (::children ctx)))))
-        [::children-stopped nil opts]
+    (let [receive-result
+          (<! (receive ctx
+                       [{:body ::all-children-stopped}] [::children-stopped opts]
+                       :else ::same))]
+      (if (= ::same receive-result)
+        (do
+          (when (and 
+                 (not (seq? (deref (::children ctx)))))
+            (tell! (::self ctx) {:signal? true :body ::all-children-stopped}))
+          [receive-result opts])
         receive-result))))
 
 (defn- default-children-stopped-behavior
@@ -244,8 +250,8 @@
            (log! (::self ctx) "telling all children to stop...")
            (doseq [child-ref children-refs]
              (tell! child-ref {:signal? true :body ::stop}))
-           [::stopping-children nil opts])
-         [::children-stopped nil opts])))))
+           [::stopping-children opts])
+         [::children-stopped opts])))))
 
 (defn- default-exception-behavior
   [ctx state e]
@@ -255,7 +261,7 @@
         init-behavior (get-behavior ctx ::init)
         props (::props ctx)]
     (cleanup-behavior ctx state)
-    [::receive (init-behavior ctx props)]))
+    (init-behavior ctx (atom props))))
 
 (def ^:private default-behaviors
   {::init default-init-behavior
@@ -266,84 +272,103 @@
    ::children-stopped default-children-stopped-behavior
    ::exception default-exception-behavior})
 
+(defn resolve-behavior
+  [ctx behavior]
+  (if (fn? behavior)
+    behavior
+    (get-behavior ctx behavior)))
+
+(defn replace-same-behavior
+  [target replacement]
+  (if (= ::same target)
+    replacement
+    target))
+
 (defn- run-loop!
   [ctx]
-  (go-loop [behavior (get-behavior ctx ::init)
-            state [(::props ctx)]]
-    (let [call-result (apply behavior ctx state)
-          read-result (if (chan? call-result) (<! call-result) call-result)
-          _ (log! (::self ctx) "read-result:" read-result)
-
-          [next-behavior next-state]
-          (cond 
-            (= ::same read-result) [behavior state]
-            (fn? read-result) [read-result state]
-            (vector? read-result) [(first read-result) (rest read-result)])]
-      (if (= read-result ::terminate-run-loop)
-        (log! (::self ctx) "run loop terminated")
-        (recur (if (fn? next-behavior)
-                 next-behavior
-                 (get-behavior ctx next-behavior))
-               next-state)))))
+  (let [state (::state ctx)]
+    (go-loop [behavior ::init
+              behavior-args []]
+      (log! (::self ctx) "behavior:" behavior "args:" behavior-args)
+      (if-let [resolved-behavior (resolve-behavior ctx behavior)]
+        (let [call-result (apply resolved-behavior ctx state behavior-args)
+              read-result (if (chan? call-result) (<! call-result) call-result)]
+          (cond
+            (= ::terminate-run-loop read-result) (log! (::self ctx) "run loop terminated")
+            (= ::same read-result) (recur behavior behavior-args)
+            (vector? read-result) (recur (replace-same-behavior (first read-result) behavior)
+                                         (rest read-result))
+            :else (recur read-result [])))
+        (throw (ex-info (str "Invalid behavior: " behavior)
+                        {:fatal true}))))))
 
 (defn- user-guard-receive-behavior
-  [ctx {:keys [main-actor-ref] :as state}]
-  (receive ctx state
-           [{:from main-actor-ref :body ::terminated}]
-           (do
-             (log! (::self ctx) "Main actor is dead. Stopping the user guard...")
-             [::stopped state])
-           :else [::receive state]))
+  [ctx state]
+  (let [main-actor-ref (:main-actor-ref @state)]
+    (receive ctx
+             [{:from main-actor-ref :body ::terminated}]
+             (do
+               (log! (::self ctx) "Main actor is dead. Stopping the user guard...")
+               ::stopped)
+             :else ::same)))
 
 (defn- user-guard-init-behavior
-  [ctx [result-ch actor-name behavior-m actor-args]]
+  [ctx state]
   (log! (::self ctx) "In user subsystem init...")
-  (let [main-actor-ref (spawn! ctx actor-name behavior-m actor-args)]
+  (let [{:keys [result-ch actor-name behaviors props]} @state
+        main-actor-ref (spawn! ctx actor-name behaviors props)]
     (go (>! result-ch main-actor-ref)
         (async/close! result-ch))
+    (swap! state assoc :main-actor-ref main-actor-ref)
     (reg-watcher! main-actor-ref (::self ctx))
-    [user-guard-receive-behavior {:main-actor-ref main-actor-ref}]))
+    ::receive))
 
 (defn- user-guard-cleanup-behavior
-  [ctx {:keys [main-actor-ref] :as state}]
-  (when main-actor-ref (unreg-watcher! main-actor-ref (::self ctx)))
-  [::done (assoc state :main-actor-ref nil)])
+  [ctx state]
+  (when-let [main-actor-ref (:main-actor-ref @state)]
+    (unreg-watcher! main-actor-ref (::self ctx))
+    (swap! state dissoc :main-actor-ref))
+  ::done)
 
 (def ^:private user-guard
   {::init user-guard-init-behavior
    ::receive user-guard-receive-behavior
    ::cleanup user-guard-cleanup-behavior})
 
-(defn- temp-guard-receive-behavior
-  [ctx state]
-  (receive ctx state
-           :else [::receive state]))
-
-(def ^:private temp-guard
-  {::receive temp-guard-receive-behavior})
+(def ^:private temp-guard {})
 
 (defn- actor-system-receive-behavior
-  [ctx {:keys [user-guard-ref] :as state}]
-  (receive ctx state
-           [{:from user-guard-ref :body ::terminated}]
-           (do
-             (log! (::self ctx) "The user guard is dead. Stopping the actor system...")
-             [::stopped state])
-           :else [::receive state]))
+  [ctx state]
+  (let [user-guard-ref (:user-guard-ref @state)]
+    (receive ctx
+             [{:from user-guard-ref :body ::terminated}]
+             (do
+               (log! (::self ctx) "The user guard is dead. Stopping the actor system...")
+               ::stopped)
+             :else ::same)))
 
 (defn- actor-system-init-behavior
-  [ctx [result-ch actor-name behavior-m actor-args]]
+  [ctx state]
   (log! (::self ctx) "In actor system init...")
-  (let [user-guard-ref
-        (spawn! ctx "user" user-guard [result-ch actor-name behavior-m actor-args])]
+  (let [{:keys [result-ch actor-name behaviors props]} @state
+        user-guard-props {:result-ch result-ch
+                          :actor-name actor-name
+                          :behaviors behaviors
+                          :props props}
+        
+        user-guard-ref
+        (spawn! ctx "user" user-guard user-guard-props)]
     (spawn! ctx "temp" temp-guard nil)
     (reg-watcher! user-guard-ref (::self ctx))
-    [::receive {:user-guard-ref user-guard-ref}]))
+    (swap! state assoc :user-guard-ref user-guard-ref)
+    ::receive))
 
 (defn- actor-system-cleanup-behavior
-  [ctx {:keys [user-guard-ref] :as state}]
-  (when user-guard-ref (unreg-watcher! user-guard-ref (::self ctx)))
-  [::done (assoc state :user-guard-ref nil)])
+  [ctx state]
+  (when-let [user-guard-ref (:user-guard-ref @state)]
+    (unreg-watcher! user-guard-ref (::self ctx))
+    (swap! state dissoc :user-guard-ref))
+  ::done)
 
 (def ^:private actor-system
   {::init actor-system-init-behavior
@@ -351,10 +376,13 @@
    ::cleanup actor-system-cleanup-behavior})
 
 (defn <start-system!
-  [actor-name behavior-m actor-args]
+  [actor-name behaviors props]
   (let [result-ch (chan)
         system-ref (local-actor-ref (bubble-ref) "system@localhost")
-        system-props [result-ch actor-name behavior-m actor-args]
+        system-props {:result-ch result-ch
+                      :actor-name actor-name
+                      :behaviors behaviors
+                      :props props}
         system-ctx (actor-context nil system-ref actor-system system-props)]
     (reset! !system-ctx system-ctx)
     (run-loop! system-ctx)
@@ -370,21 +398,21 @@
     (children id)))
 
 (defn ask-actor-init-behavior
-  [ctx {:keys [target msg reply-ch]}]
-  (tell! target (assoc msg :from (::self ctx)))
-  [::receive {:target target
-              :reply-ch reply-ch}])
+  [ctx state]
+  (let [{:keys [target msg]} @state]
+    (tell! target (assoc msg :from (::self ctx)))
+    ::receive))
 
 (defn ask-actor-receive-behavior
-  [ctx {:as state
-        :keys [target reply-ch]}]
-  (receive ctx state
-           [{:from target :body body}]
-           (do
-             (go (>! reply-ch body)
-                 (async/close! reply-ch))
-             [::stopped state])
-           :else [::receive state]))
+  [ctx state]
+  (let [{:keys [target reply-ch]} @state]
+    (receive ctx
+             [{:from target :body body}]
+             (do
+               (go (>! reply-ch body)
+                   (async/close! reply-ch))
+               ::stopped)
+             :else ::same)))
 
 (def ask-actor-behaviors
   {::init ask-actor-init-behavior
@@ -415,26 +443,28 @@
 
 (comment
   (defn my-hero-init-behavior
-    [ctx _props]
+    [ctx _state]
     (log! (::self ctx) "In MyHero init...")
-    [::receive nil])
+    ::receive)
   
   (def my-hero
     {::init my-hero-init-behavior})
 
   (defn greeter-receive-behavior
     [ctx state]
-    (receive ctx state
-             [{:body [:greet who]}]
-             (do
-               (println (format "%s %s!" (:greeting state) who))
-               [::receive state])
-             :else [::receive state]))
+    (let [greeting (:greeting @state)]
+      (receive ctx
+               [{:body [:greet who]}]
+               (do
+                 (println (format "%s %s!" greeting who))
+                 ::same)
+               :else ::same)))
 
   (defn greeter-init-behavior
-    [ctx [greeting]]
+    [ctx state]
     (spawn! ctx "my-hero" my-hero [])
-    [::receive {:greeting greeting :x 0}])
+    (swap! state assoc :x 0)
+    ::receive)
 
   (def greeter
     {::init greeter-init-behavior
@@ -442,7 +472,9 @@
 
   (def !main-actor-ref (atom nil))
 
-  (go (reset! !main-actor-ref (<! (<start-system! "greeter" greeter ["Hello"]))))
+  (go (reset! !main-actor-ref
+              (<! (<start-system! "greeter" greeter {:greeting "Hello"}))))
+  
   (tell! @!main-actor-ref {:body [:greet "Andrey"]})
   (tell! @!main-actor-ref {:body ::stop})
 
