@@ -40,8 +40,15 @@
 
 (defmulti get-path
   (fn [actor-ref]
-    {:pre [(s/valid? ::actor-ref actor-ref)]}
-    (::scope actor-ref)))
+    {:pre [(or (nil? actor-ref)
+               (s/valid? ::actor-ref actor-ref))]}
+    (if (nil? actor-ref)
+      :nil
+      (::scope actor-ref))))
+
+(defmethod get-path :nil
+  [_]
+  nil)
 
 (defmethod get-path :local
   [actor-ref]
@@ -151,20 +158,8 @@
 
 (defn remove-child!
   [ctx child-ref]
-  (log! (::self ctx) "removing child:" child-ref)
+  (log! (::self ctx) "removing child:" (get-path child-ref))
   (swap! (::children ctx) dissoc (::id child-ref)))
-
-(defn <stop-all-children!
-  [ctx]
-  (go
-    (log! (::self ctx) "stopping all children...")
-    (log! (::self ctx) "all children stopped:"
-          (<! (apply
-               <take-all
-               (map #(<ask! % {:body ::stop})
-                    (map ::self (vals (deref (::children ctx)))))))
-          (reset! (::children ctx) {}))
-    true))
 
 (defn- ctx-rcv
   [ctx]
@@ -172,7 +167,9 @@
     (let [self-ref (::self ctx)
           [msg _port] (async/alts! [(::signal-port self-ref)
                                     (::normal-port self-ref)])]
-      (log! self-ref "got message:" msg)
+      (log! self-ref
+            (if (:signal? msg) "signal:" "message:")
+            (:body msg) "from:" (get-path (:from msg)))
       msg)))
 
 (defmacro receive
@@ -180,9 +177,11 @@
   `(go
      (try
        (match [(<! (ctx-rcv ~ctx))]
-              [{:from sender# :body ::stop}] [::stopped ~state sender#]
-              [{:body ::stop}] [::stopped ~state nil]
-              [{:from sender# :body ::child-terminated}] [::child-terminated ~state sender#]
+              [{:from sender# :body ::stop}] [::stopped ~state {:requested-by sender#}]
+              [{:body ::stop}] [::stopped ~state]
+              [{:from sender# :body ::child-terminated}]
+              (do (remove-child! ~ctx sender#)
+                  ::same)
               ~@clauses)
        (catch Exception e#
          [::exception ~state e#]))))
@@ -203,31 +202,50 @@
            [ignored-msg]
            (do
              (log! (::self ctx) "Message ignored:" ignored-msg)
-             nil)))
+             ::same)))
 
 (defn- default-cleanup-behavior
   [_ctx _state]
   [::done nil])
 
-(defn- default-stopped-behavior
-  [ctx state stop-sender]
+(defn- default-stopping-children-behavior
+  [ctx state opts]
   (go
-    (let [self-ref (::self ctx)
-          cleanup-behavior (get-behavior ctx ::cleanup)]
-      (log! self-ref "stopping requested by:" stop-sender)
-      (stop-receiving-messages! self-ref)
-      (cleanup-behavior ctx state)
-      (<! (<stop-all-children! ctx))
-      (log! self-ref "actor stopped")
-      (reg-death! self-ref)
-      (when stop-sender
-        (tell! stop-sender {:from self-ref :body ::stopped})))
+    (let [receive-result (<! (receive ctx state))]
+      (log! (::self ctx) "REC RES IN STOPPING ALL CHILDREN:" receive-result)
+      (if (and (= ::same receive-result)
+               (not (seq? (deref (::children ctx)))))
+        [::children-stopped nil opts]
+        receive-result))))
+
+(defn- default-children-stopped-behavior
+  [ctx _state {:keys [requested-by]}]
+  (let [self-ref (::self ctx)]
+    (stop-receiving-messages! self-ref)
+    (log! self-ref "actor stopped")
+    (reg-death! self-ref)
+    (when requested-by
+      (tell! requested-by {:from self-ref :body ::stopped}))
     ::terminate-run-loop))
 
-(defn- default-child-terminated-behavior
-  [ctx state who]
-  (remove-child! ctx who)
-  [::receive state])
+(defn- default-stopped-behavior
+  ([ctx state]
+   (default-stopped-behavior ctx state {}))
+  ([ctx state {:as opts
+               :keys [requested-by]}]
+   (let [self-ref (::self ctx)
+         cleanup-behavior (get-behavior ctx ::cleanup)]
+     (when requested-by
+       (log! self-ref "stopping requested by:" requested-by))
+     (cleanup-behavior ctx state)
+     (let [children-refs (map ::self (vals (deref (::children ctx))))]
+       (if (seq children-refs)
+         (do
+           (log! (::self ctx) "telling all children to stop...")
+           (doseq [child-ref children-refs]
+             (tell! child-ref {:signal? true :body ::stop}))
+           [::stopping-children nil opts])
+         [::children-stopped nil opts])))))
 
 (defn- default-exception-behavior
   [ctx state e]
@@ -244,7 +262,8 @@
    ::receive noop-behavior
    ::cleanup default-cleanup-behavior
    ::stopped default-stopped-behavior
-   ::child-terminated default-child-terminated-behavior
+   ::stopping-children default-stopping-children-behavior
+   ::children-stopped default-children-stopped-behavior
    ::exception default-exception-behavior})
 
 (defn- run-loop!
@@ -255,11 +274,11 @@
           read-result (if (chan? call-result) (<! call-result) call-result)
           _ (log! (::self ctx) "read-result:" read-result)
 
-          [next-behavior & next-state]
+          [next-behavior next-state]
           (cond 
-            (nil? read-result) [behavior state]
+            (= ::same read-result) [behavior state]
             (fn? read-result) [read-result state]
-            (vector? read-result) read-result)]
+            (vector? read-result) [(first read-result) (rest read-result)])]
       (if (= read-result ::terminate-run-loop)
         (log! (::self ctx) "run loop terminated")
         (recur (if (fn? next-behavior)
@@ -273,7 +292,7 @@
            [{:from main-actor-ref :body ::terminated}]
            (do
              (log! (::self ctx) "Main actor is dead. Stopping the user guard...")
-             [::stopped state nil])
+             [::stopped state])
            :else [::receive state]))
 
 (defn- user-guard-init-behavior
@@ -309,7 +328,7 @@
            [{:from user-guard-ref :body ::terminated}]
            (do
              (log! (::self ctx) "The user guard is dead. Stopping the actor system...")
-             [::stopped state nil])
+             [::stopped state])
            :else [::receive state]))
 
 (defn- actor-system-init-behavior
@@ -364,7 +383,7 @@
            (do
              (go (>! reply-ch body)
                  (async/close! reply-ch))
-             [::stopped nil nil])
+             [::stopped state])
            :else [::receive state]))
 
 (def ask-actor-behaviors
@@ -424,7 +443,6 @@
   (def !main-actor-ref (atom nil))
 
   (go (reset! !main-actor-ref (<! (<start-system! "greeter" greeter ["Hello"]))))
-  
   (tell! @!main-actor-ref {:body [:greet "Andrey"]})
   (tell! @!main-actor-ref {:body ::stop})
 
