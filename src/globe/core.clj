@@ -261,7 +261,8 @@
         init-behavior (get-behavior ctx ::init)
         props (::props ctx)]
     (cleanup-behavior ctx state)
-    (init-behavior ctx (atom props))))
+    (reset! state props)
+    (init-behavior ctx state)))
 
 (def ^:private default-behaviors
   {::init default-init-behavior
