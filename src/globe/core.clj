@@ -95,8 +95,13 @@
 
 (defmethod tell! :local
   [actor-ref msg]
-  (go (>! (actor-ref (if (:signal? msg) ::signal-port ::normal-port))
-          msg)))
+  (let [port-id (if (:signal? msg) ::signal-port ::normal-port)
+        port (actor-ref port-id)
+        dead? (deref (::dead? actor-ref))]
+    (if (and (= port-id ::normal-port)
+             dead?)
+      (log! actor-ref "port dead, not listening to:" msg)
+      (go (>! port msg)))))
 
 (defmethod tell! :bubble
   [actor-ref msg]
@@ -132,7 +137,6 @@
 (defn reg-death!
   [actor-ref]
   {:pre [(s/valid? ::actor-ref actor-ref)]}
-  (reset! (::dead? actor-ref) true)
   (doseq [watcher (first (swap-vals! (::watchers actor-ref) #{}))]
     (tell! watcher {:from actor-ref :body ::terminated}))
   (tell! (::parent actor-ref) {:signal? true :from actor-ref :body ::child-terminated}))
@@ -142,12 +146,17 @@
 
 (defn- actor-context
   [parent self-ref behaviors props]
-  {::parent parent
-   ::self self-ref
-   ::behaviors behaviors
-   ::props props
-   ::state (atom props)
-   ::children (atom {})})
+  (let [ctx {::parent parent
+             ::self self-ref
+             ::behaviors behaviors
+             ::props props
+             ::state (atom props)
+             ::children (atom {})
+             ::signalling-behavior (atom :running)}]
+    (add-watch (::signalling-behavior ctx) ::signalling-behavior
+               (fn [_k _r _os ns]
+                 (log! (::self ctx) ":signalling-behavior changed to:" ns)))
+    ctx))
 
 (defn spawn!
   [ctx actor-name behaviors props]
@@ -162,31 +171,6 @@
   (log! (::self ctx) "removing child:" (get-path child-ref))
   (swap! (::children ctx) dissoc (::id child-ref)))
 
-(defn- ctx-rcv
-  [ctx]
-  (go 
-    (let [self-ref (::self ctx)
-          [msg _port] (async/alts! [(::signal-port self-ref)
-                                    (::normal-port self-ref)])]
-      (log! self-ref
-            (if (:signal? msg) "signal:" "message:")
-            (:body msg) "from:" (get-path (:from msg)))
-      msg)))
-
-(defmacro receive
-  [ctx & clauses]
-  `(go
-     (try
-       (match [(<! (ctx-rcv ~ctx))]
-              [{:from sender# :body ::stop}] [::stopped {:requested-by sender#}]
-              [{:body ::stop}] ::stopped
-              [{:from sender# :body ::child-terminated}]
-              (do (remove-child! ~ctx sender#)
-                  ::same)
-              ~@clauses)
-       (catch Exception e#
-         [::exception e#]))))
-
 (declare default-behaviors)
 
 (defn get-behavior
@@ -197,25 +181,25 @@
   [_ctx _state]
   ::receive)
 
-(defn noop-behavior
-  [ctx _state]
-  (receive ctx
-           [ignored-msg]
-           (do
-             (log! (::self ctx) "Message ignored:" ignored-msg)
-             ::same)))
+(defn default-receive-behavior
+  [ctx _state msg]
+  (match [msg]
+         [ignored-msg]
+         (do
+           (log! (::self ctx) "Message ignored:" ignored-msg)
+           ::receive)))
 
 (defn- default-cleanup-behavior
   [_ctx _state]
   ::done)
 
 (defn- default-stopping-children-behavior
-  [ctx _state opts]
+  [ctx _state msg opts]
   (go
     (let [receive-result
-          (<! (receive ctx
-                       [{:body ::all-children-stopped}] [::children-stopped opts]
-                       :else ::same))]
+          (<! (match [msg]
+                     [{:body ::all-children-stopped}] [::children-stopped opts]
+                     :else ::same))]
       (if (= ::same receive-result)
         (do
           (when (and 
@@ -266,7 +250,7 @@
 
 (def ^:private default-behaviors
   {::init default-init-behavior
-   ::receive noop-behavior
+   ::receive default-receive-behavior
    ::cleanup default-cleanup-behavior
    ::stopped default-stopped-behavior
    ::stopping-children default-stopping-children-behavior
@@ -277,7 +261,20 @@
   [ctx behavior]
   (if (fn? behavior)
     behavior
-    (get-behavior ctx behavior)))
+    (if-let [resolved-behavior (get-behavior ctx behavior)]
+      resolved-behavior
+      (throw (ex-info (str "Unknown behavior " behavior " for: "
+                           (get-path (::self ctx)))
+                      {:fatal true})))))
+
+(defn run-behavior
+  [behavior ctx & args]
+  (go
+    (let [call-result (apply behavior ctx (::state ctx) args)
+          next-behavior (if (chan? call-result)
+                          (<! call-result)
+                          call-result)]
+      (resolve-behavior ctx next-behavior))))
 
 (defn replace-same-behavior
   [target replacement]
@@ -285,33 +282,136 @@
     replacement
     target))
 
+(defn- run-port-loop!
+  [loop-name self-ref port handler]
+  (go-loop [next-handler handler]
+    (if-let [msg (<! port)]
+      (do
+        (log! self-ref (str loop-name " msg:" msg))
+        (recur (<! (next-handler msg))))
+      (log! self-ref (str "loop terminated: " loop-name)))))
+
+(defn has-children?
+  [ctx]
+  (seq (deref (::children ctx))))
+
+(defn children-refs
+  [ctx]
+  (map ::self (vals (deref (::children ctx)))))
+
+(declare handle-signal)
+(declare terminate!)
+
+(defn drain-messages
+  [self-ref port-name port]
+  (log! self-ref (str "draining messages on " port-name "..."))
+  (go-loop [msg-count 0]
+    (if-let [msg (<! port)]
+      (do
+        (log! self-ref (str "message drained on " port-name ":") msg)
+        (recur (inc msg-count)))
+      (log! self-ref (str "messages drained on " port-name "total:") msg-count))))
+
+(defmulti handle-child-terminated-signal
+  (fn [ctx _child-ref]
+    (deref (::signalling-behavior ctx))))
+
+(defmethod handle-child-terminated-signal :default
+  [ctx child-ref]
+  (remove-child! ctx child-ref))
+
+(defmethod handle-child-terminated-signal :stopping
+  [ctx child-ref]
+  (go 
+    (remove-child! ctx child-ref)
+    (when-not (has-children? ctx)
+      (<! (terminate! ctx)))))
+
+(defn- terminate!
+  [ctx]
+  (go
+    (let [self-ref (::self ctx)
+          signal-port (::signal-port self-ref)]
+      (log! self-ref "terminating...")
+      (async/close! signal-port)
+      (<! (drain-messages self-ref "signal" signal-port))
+      (reg-death! self-ref))))
+
+(defn tell-children-to-stop
+  [ctx]
+  {:pre [(has-children? ctx)]}
+  (log! (::self ctx) "telling all children to stop...")
+  (doseq [child-ref (children-refs ctx)]
+    (tell! child-ref {:body ::poison-pill})))
+
+(defn- handle-stopped-signal
+  [ctx]
+  (go
+    (reset! (::signalling-behavior ctx) :stopping)
+    (log! (::self ctx) "::signalling-behavior" (deref (::signalling-behavior ctx)))
+    (if (has-children? ctx)
+      (tell-children-to-stop ctx)
+      (do
+        (log! (::self ctx) "has no children, alright")
+        (<! (terminate! ctx))))))
+
+(defn- handle-signal
+  [ctx msg]
+  (go
+    (let [self-ref (::self ctx)
+          result (match [msg]
+                        [{:from self-ref :body ::stopped}]
+                        (handle-stopped-signal ctx)
+                        [{:from child-ref :body ::child-terminated}]
+                        (handle-child-terminated-signal ctx child-ref))]
+      (when (chan? result)
+        (<! result))
+      (partial handle-signal ctx))))
+
+(defn handle-poison-pill-message
+  [ctx]
+  (go
+    (let [self-ref (::self ctx)
+          normal-port (::normal-port self-ref)]
+      (log! self-ref "got ::poison-pill")
+      (reset! (::dead? self-ref) true)
+      (async/close! normal-port)
+      (<! (drain-messages self-ref "normal" normal-port))
+      (tell! self-ref {:signal? true :from self-ref :body ::stopped}))))
+
+(defn- handle-message
+  [behavior ctx msg]
+  (go
+    (match [msg]
+           [{:body ::poison-pill}]
+           (<! (handle-poison-pill-message ctx))
+           :else
+           (partial handle-message
+                    (<! (run-behavior behavior ctx msg))
+                    ctx))))
+
 (defn- run-loop!
   [ctx]
-  (let [state (::state ctx)]
-    (go-loop [behavior ::init
-              behavior-args []]
-      (log! (::self ctx) "behavior:" behavior "args:" behavior-args)
-      (if-let [resolved-behavior (resolve-behavior ctx behavior)]
-        (let [call-result (apply resolved-behavior ctx state behavior-args)
-              read-result (if (chan? call-result) (<! call-result) call-result)]
-          (cond
-            (= ::terminate-run-loop read-result) (log! (::self ctx) "run loop terminated")
-            (= ::same read-result) (recur behavior behavior-args)
-            (vector? read-result) (recur (replace-same-behavior (first read-result) behavior)
-                                         (rest read-result))
-            :else (recur read-result [])))
-        (throw (ex-info (str "Invalid behavior: " behavior)
-                        {:fatal true}))))))
+  (go
+    (let [self-ref (::self ctx)
+          init-behavior (resolve-behavior ctx ::init)
+          first-behavior (<! (run-behavior init-behavior ctx))]
+      (run-port-loop! "signal" self-ref
+                      (::signal-port self-ref)
+                      (partial handle-signal ctx))
+      (run-port-loop! "normal" self-ref
+                      (::normal-port self-ref)
+                      (partial handle-message first-behavior ctx)))))
 
 (defn- user-guard-receive-behavior
-  [ctx state]
+  [ctx state msg]
   (let [main-actor-ref (:main-actor-ref @state)]
-    (receive ctx
-             [{:from main-actor-ref :body ::terminated}]
-             (do
-               (log! (::self ctx) "Main actor is dead. Stopping the user guard...")
-               ::stopped)
-             :else ::same)))
+    (match [msg]
+           [{:from main-actor-ref :body ::terminated}]
+           (do
+             (log! (::self ctx) "Main actor is dead. Stopping the user guard...")
+             ::stopped)
+           :else ::receive)))
 
 (defn- user-guard-init-behavior
   [ctx state]
@@ -339,14 +439,14 @@
 (def ^:private temp-guard {})
 
 (defn- actor-system-receive-behavior
-  [ctx state]
+  [ctx state msg]
   (let [user-guard-ref (:user-guard-ref @state)]
-    (receive ctx
-             [{:from user-guard-ref :body ::terminated}]
-             (do
-               (log! (::self ctx) "The user guard is dead. Stopping the actor system...")
-               ::stopped)
-             :else ::same)))
+    (match [msg]
+           [{:from user-guard-ref :body ::terminated}]
+           (do
+             (log! (::self ctx) "The user guard is dead. Stopping the actor system...")
+             ::stopped)
+           :else ::receive)))
 
 (defn- actor-system-init-behavior
   [ctx state]
@@ -405,15 +505,15 @@
     ::receive))
 
 (defn ask-actor-receive-behavior
-  [ctx state]
+  [ctx state msg]
   (let [{:keys [target reply-ch]} @state]
-    (receive ctx
-             [{:from target :body body}]
-             (do
-               (go (>! reply-ch body)
-                   (async/close! reply-ch))
-               ::stopped)
-             :else ::same)))
+    (match [msg]
+           [{:from target :body body}]
+           (do
+             (go (>! reply-ch body)
+                 (async/close! reply-ch))
+             ::stopped)
+           :else ::receive)))
 
 (def ask-actor-behaviors
   {::init ask-actor-init-behavior
@@ -452,14 +552,14 @@
     {::init my-hero-init-behavior})
 
   (defn greeter-receive-behavior
-    [ctx state]
+    [ctx state msg]
     (let [greeting (:greeting @state)]
-      (receive ctx
-               [{:body [:greet who]}]
-               (do
-                 (println (format "%s %s!" greeting who))
-                 ::same)
-               :else ::same)))
+      (match [msg]
+             [{:body [:greet who]}]
+             (do
+               (println (format "%s %s!" greeting who))
+               ::receive)
+             :else ::receive)))
 
   (defn greeter-init-behavior
     [ctx state]
@@ -477,7 +577,7 @@
               (<! (<start-system! "greeter" greeter {:greeting "Hello"}))))
   
   (tell! @!main-actor-ref {:body [:greet "Andrey"]})
-  (tell! @!main-actor-ref {:body ::stop})
+  (tell! @!main-actor-ref {:body ::poison-pill})
 
   (tap> @!main-actor-ref)
 
