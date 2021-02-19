@@ -100,6 +100,10 @@
   [actor-ref msg]
   (log! actor-ref "was told:" msg))
 
+(defn reply!
+  [msg reply-body]
+  (tell! (:from msg) {:subj ::reply :body reply-body}))
+
 (defmulti stop-receiving-messages!
   (fn [actor-ref]
     {:pre [(s/valid? ::actor-ref actor-ref)]}
@@ -366,7 +370,7 @@
 
   (fn [msg]
     (match [msg]
-           [{:from target :body body}]
+           [{:subj ::reply :body body}]
            (do
              (go (>! reply-ch body)
                  (async/close! reply-ch))
@@ -413,8 +417,8 @@
         (match [msg]
                [{:subj :greet :body who}]
                (println (format "%s %s!" greeting who))
-               [{:subj :wassup? :from sender}]
-               (tell! sender {:from self :subj :reply :body "WASSUP!!!"})
+               [{:subj :wassup?}]
+               (reply! msg "WASSUP!!!")
                :else (receive! ctx msg)))))
   
   (def !main-actor-ref (atom nil))
