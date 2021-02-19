@@ -138,19 +138,19 @@
 (defn reg-death!
   [actor-ref]
   {:pre [(s/valid? ::actor-ref actor-ref)]}
+  (tell! (::parent actor-ref) {:signal? true :from actor-ref :subj ::child-terminated})
   (doseq [watcher (first (swap-vals! (::watchers actor-ref) #{}))]
-    (tell! watcher {:from actor-ref :subj ::terminated}))
-  (tell! (::parent actor-ref) {:signal? true :from actor-ref :subj ::child-terminated}))
+    (tell! watcher {:from actor-ref :subj ::terminated})))
 
 (defn drain-messages
   [self-ref port-name port]
-  (log! self-ref (str "draining messages on " port-name "..."))
   (go-loop [msg-count 0]
     (if-let [msg (<! port)]
       (do
         (log! self-ref (str "message drained on " port-name ":") msg)
         (recur (inc msg-count)))
-      (log! self-ref (str "messages drained on " port-name "total:") msg-count))))
+      (when (pos? msg-count)
+        (log! self-ref (str "messages drained on " port-name " total:") msg-count)))))
 
 (declare run-loop!)
 (declare <ask!)
@@ -162,7 +162,8 @@
    ::actor-fn actor-fn
    ::children (atom {})
    ::suspended? (atom false)
-   ::behavior-id (atom ::running)})
+   ::behavior-id (atom ::running)
+   ::handlers (atom {})})
 
 (defn spawn!
   [ctx actor-name actor-fn]
@@ -234,16 +235,21 @@
   (behave-as! ctx ::stopping)
   (tell-children-to-stop ctx))
 
-(defn- handle-children-stopped
+(defn- terminate!
   [ctx]
   (let [self-ref (::self ctx)
         signal-port (::signal-port self-ref)
         normal-port (::normal-port self-ref)]
-    (reg-death! self-ref)
     (stop-receiving-messages! self-ref)
     (go
       (<! (drain-messages self-ref "signal" signal-port))
-      (<! (drain-messages self-ref "normal" normal-port)))))
+      (<! (drain-messages self-ref "normal" normal-port))
+      (reg-death! self-ref)
+      (log! self-ref "terminated"))))
+
+(defn- handle-children-stopped
+  [ctx]
+  (terminate! ctx))
 
 (defn receive!
   [ctx msg]
@@ -253,28 +259,46 @@
          [::stopping {:subj ::children-stopped}] (handle-children-stopped ctx)
          :else (log! (::self ctx) "Message ignored:" msg)))
 
+(defn- default-handlers
+  [ctx]
+  {:receive (fn [msg] (receive! ctx msg))
+   :cleanup (fn [])})
+
+(defn- extract-handlers-from-init-result
+  [ctx init-result]
+  (merge (default-handlers ctx)
+         (if (map? init-result)
+           init-result
+           {:receive init-result})))
+
+(defn- init-actor!
+  [ctx]
+  (let [actor-fn (::actor-fn ctx)
+        receive-or-m (actor-fn ctx)
+        handlers (extract-handlers-from-init-result ctx receive-or-m)]
+    (reset! (::handlers ctx) handlers)))
+
+(defn- process-received-result
+  [ctx result]
+  (go-loop [result result]
+    (cond
+      (chan? result) (recur (<! result))
+      (= ::stopped result) (handle-poison-pill ctx)
+      :else result)))
+
 (defn- run-loop!
   [ctx]
-  (let [self-ref (::self ctx)
-        actor-fn (::actor-fn ctx)
-        receive-or-m (actor-fn ctx)
-        
-        {:keys [cleanup receive]
-         :or {receive (fn [msg] (receive! ctx msg))
-              cleanup (fn [])}}
-        (if (map? receive-or-m)
-          receive-or-m
-          {:receive receive-or-m})]
-    (go-loop [ports (active-ports ctx)]
-      (let [[msg _port] (async/alts! ports :priority true)]
-        (if msg
-          (do 
-            (loop [result (receive msg)]
-              (cond
-                (chan? result) (recur (<! result))
-                (= ::stopped result) (handle-poison-pill ctx)))
-            (recur (active-ports ctx)))
-          (log! self-ref "terminated"))))))
+  (init-actor! ctx)
+  (let [self-ref (::self ctx)]
+    (go-loop []
+      (let [receive (:receive (deref (::handlers ctx)))
+            ports (active-ports ctx)
+            [msg _port] (async/alts! ports :priority true)]
+        (when msg
+          (log! self-ref "got msg:" msg)
+          (<! (process-received-result ctx (receive msg)))
+          (log! self-ref "done processing msg, recurring...")
+          (recur))))))
 
 (defn- user-guard
   [props ctx]
@@ -301,7 +325,7 @@
 (defn- temp-guard
   [ctx]
   (log! (::self ctx) "Initialising...")
-  nil)
+  (partial receive! ctx))
 
 (defn- actor-system
   [props ctx]
@@ -404,6 +428,8 @@
               (<! (<start-system! "greeter" (partial greeter "Hello")))))
   
   (tell! @!main-actor-ref {:subj :greet :body "Andrey"})
+  (go (println "reply:"
+               (<ask! @!main-actor-ref {:subj :wassup?})))
   (tell! @!main-actor-ref {:subj ::poison-pill})
 
   ;; helpers
