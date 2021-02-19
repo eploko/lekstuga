@@ -39,27 +39,19 @@
 (s/def ::msg (s/keys :req-un [::subj]
                      :opt-un [::body ::from ::signal?]))
 
-(defmulti get-path
-  (fn [actor-ref]
-    {:pre [(or (nil? actor-ref)
-               (s/valid? ::actor-ref actor-ref))]}
-    (if (nil? actor-ref)
-      :nil
-      (::scope actor-ref))))
-
-(defmethod get-path :nil
-  [_]
-  nil)
-
-(defmethod get-path :local
-  [actor-ref]
-  {:pre [(s/valid? ::actor-ref actor-ref)]}
-  (str (get-path (::parent actor-ref)) "/" (::id actor-ref)))
-
-(defmethod get-path :bubble
-  [actor-ref]
-  {:pre [(s/valid? ::actor-ref actor-ref)]}
-  "globe:/")
+(defn get-path
+  ([actor-ref]
+   (get-path actor-ref nil))
+  ([actor-ref postfix]
+   {:pre [(or (nil? actor-ref)
+              (s/valid? ::actor-ref actor-ref))
+          (s/valid? (s/nilable string?) postfix)]}
+   (if actor-ref
+     (case (::scope actor-ref)
+       :local (recur (::parent actor-ref)
+                     (str "/" (::id actor-ref) postfix))
+       :bubble (str "globe:/" postfix))
+     postfix)))
 
 (defn log!
   [actor-ref & args]
@@ -413,13 +405,16 @@
   (defn greeter
     [greeting ctx]
     (log! (::self ctx) "Initialising...")
-    (let [state (atom 0)]
+    (let [self (::self ctx)
+          state (atom 0)]
       (spawn! ctx "my-hero" my-hero)
 
       (fn [msg]
         (match [msg]
                [{:subj :greet :body who}]
                (println (format "%s %s!" greeting who))
+               [{:subj :wassup? :from sender}]
+               (tell! sender {:from self :subj :reply :body "WASSUP!!!"})
                :else (receive! ctx msg)))))
   
   (def !main-actor-ref (atom nil))
@@ -429,7 +424,7 @@
   
   (tell! @!main-actor-ref {:subj :greet :body "Andrey"})
   (go (println "reply:"
-               (<ask! @!main-actor-ref {:subj :wassup?})))
+               (<! (<ask! @!main-actor-ref {:subj :wassup?}))))
   (tell! @!main-actor-ref {:subj ::poison-pill})
 
   ;; helpers
