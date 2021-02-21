@@ -4,10 +4,15 @@
             [clojure.core.match :refer [match]]
             [clojure.spec.alpha :as s]
             [clojure.string :as str]
-            [globe.async :refer [<take-all chan? unbound-buf]])
+            [cognitect.anomalies :as anom]
+            [globe.async :refer [<? <take-all chan? err-or unbound-buf go-safe]])
   (:import [clojure.lang Atom]))
 
 (defonce !system-ctx (atom nil))
+
+(defn get-system-ctx
+  []
+  (deref !system-ctx))
 
 (defn atom?
   [x]
@@ -162,10 +167,12 @@
    ::handlers (atom {})})
 
 (defn spawn!
-  [ctx actor-name actor-fn]
+  [ctx actor-name actor-fn & {:keys [on-failure]
+                              :or {on-failure ::restart}}]
   (let [child-ref (local-actor-ref (::self ctx) actor-name)
         child-ctx (actor-context ctx child-ref actor-fn)]
-    (swap! (::children ctx) assoc actor-name child-ctx)
+    (swap! (::children ctx) assoc actor-name {:context child-ctx
+                                              :on-failure on-failure})
     (run-loop! child-ctx)
     child-ref))
 
@@ -183,8 +190,7 @@
         !children (::children ctx)]
     (log! self-ref "removing child:" (get-path child-ref))
     (swap! !children dissoc (::id child-ref))
-    (when (and (= ::stopping (behavior-id ctx))
-               (not (seq @!children)))
+    (when-not (seq @!children)
       (tell! self-ref {:signal? true :subj ::children-stopped}))))
 
 (defn has-children?
@@ -193,7 +199,12 @@
 
 (defn children-refs
   [ctx]
-  (map ::self (vals (deref (::children ctx)))))
+  (map (comp ::self :context) (vals (deref (::children ctx)))))
+
+(defn get-child
+  [ctx id]
+  (let [children (deref (::children ctx))]
+    (children id)))
 
 (defn- suspend!
   [ctx]
@@ -216,14 +227,26 @@
       [signal-port]
       [signal-port normal-port])))
 
-(defn tell-children-to-stop
-  [ctx]
-  (log! (::self ctx) "telling all children to stop...")
+(defn- tell-children!
+  [ctx msg & {:keys [on-no-children]
+              :or {on-no-children (fn [])}}]
   (let [child-refs (children-refs ctx)]
     (if (seq child-refs)
       (doseq [child-ref child-refs]
-        (tell! child-ref {:signal? true :subj ::poison-pill}))
-      (tell! (::self ctx) {:signal? true :subj ::children-stopped}))))
+        (tell! child-ref msg))
+      (on-no-children))))
+
+(defn tell-children-to-stop
+  [ctx]
+  (log! (::self ctx) "telling all children to stop...")
+  (tell-children! ctx {:signal? true :subj ::poison-pill}
+                  :on-no-children
+                  #(tell! (::self ctx) {:signal? true :subj ::children-stopped})))
+
+(defn tell-children-to-restart
+  [ctx]
+  (log! (::self ctx) "telling all children to restart...")
+  (tell-children! ctx {:signal? true :subj ::restart}))
 
 (defn- handle-poison-pill
   [ctx]
@@ -243,17 +266,66 @@
       (reg-death! self-ref)
       (log! self-ref "terminated"))))
 
-(defn- handle-children-stopped
+(defn- handle-anomaly
+  [ctx anomaly]
+  (let [self-ref (::self ctx)]
+    (log! self-ref "handling anomaly:" anomaly)
+    (suspend! ctx)
+    (behave-as! ctx ::awaiting-supervisor-decision)
+    (tell! (::parent self-ref) {:signal? true :from self-ref :subj ::failure :body anomaly})))
+
+(defn- supervise-child
+  [ctx child-ref anomaly]
+  (loop [on-failure (:on-failure (get-child ctx (::id child-ref)) ::restart)]
+    (case on-failure
+      ::resume (tell! child-ref {:signal? true :from (::self ctx) :subj ::resume})
+      ::restart (tell! child-ref {:signal? true :from (::self ctx) :subj ::restart})
+      ::restart-all (tell-children-to-restart ctx)
+      ::escalate (handle-anomaly ctx anomaly)
+      ::stop (tell! child-ref {:signal? true :subj ::poison-pill})
+      (recur (on-failure child-ref anomaly)))))
+
+(defn- handle-supervised-resume
   [ctx]
-  (terminate! ctx))
+  (behave-as! ctx ::running)
+  (resume! ctx))
+
+(defn- handle-supervised-restart
+  [ctx]
+  (behave-as! ctx ::restarting)
+  (tell-children-to-stop ctx))
+
+(declare init-actor!)
+(declare cleanup-actor!)
+
+(defn- restart-actor!
+  [ctx]
+  (cleanup-actor! ctx)
+  (behave-as! ctx ::running)
+  (init-actor! ctx)
+  (resume! ctx))
 
 (defn receive!
   [ctx msg]
-  (match [(behavior-id ctx) msg]
-         [::running {:subj ::poison-pill}] (handle-poison-pill ctx)
-         [_ {:subj ::child-terminated :from child-ref}] (remove-child! ctx child-ref)
-         [::stopping {:subj ::children-stopped}] (handle-children-stopped ctx)
-         :else (log! (::self ctx) "Message ignored:" msg)))
+  (let [self-ref (::self ctx)
+        parent-ref (::parent self-ref)]
+    (match [(behavior-id ctx) msg]
+           [::awaiting-supervisor-decision {:subj ::resume :from parent-ref}]
+           (handle-supervised-resume ctx)
+           [::awaiting-supervisor-decision {:subj ::restart :from parent-ref}]
+           (handle-supervised-restart ctx)
+           [::running {:subj ::poison-pill}]
+           (handle-poison-pill ctx)
+           [::running {:subj ::failure :from child-ref :body anomaly}]
+           (supervise-child ctx child-ref anomaly)
+           [_ {:subj ::child-terminated :from child-ref}]
+           (remove-child! ctx child-ref)
+           [::stopping {:subj ::children-stopped}]
+           (terminate! ctx)
+           [::restarting {:subj ::children-stopped}]
+           (restart-actor! ctx)
+           :else
+           (log! (::self ctx) "Message ignored:" msg))))
 
 (defn- default-handlers
   [ctx]
@@ -274,27 +346,59 @@
         handlers (extract-handlers-from-init-result ctx receive-or-m)]
     (reset! (::handlers ctx) handlers)))
 
-(defn- process-received-result
+(defn- cleanup-actor!
+  [ctx]
+  (when-let [cleanup (:cleanup (deref (::handlers ctx)))]
+    (cleanup)))
+
+(defn- trap-stopped-kw
   [ctx result]
-  (go-loop [result result]
-    (cond
-      (chan? result) (recur (<! result))
-      (= ::stopped result) (handle-poison-pill ctx)
-      :else result)))
+  (if (= ::stopped result)
+    (handle-poison-pill ctx)
+    result))
+
+(defn- unchan-result
+  [result]
+  (go-safe
+   (loop [result result]
+     (if (chan? result)
+       (recur (<? result))
+       result))))
+
+(defn- run-msg-handler
+  [h msg]
+  (unchan-result (err-or (h msg))))
+
+(defn- trap-anomalies
+  [ctx ch]
+  (go
+    (let [v (err-or (<? ch))]
+      (if (::anom/category v)
+        (handle-anomaly ctx v)
+        v))))
+
+(defn- handle-message!
+  [ctx msg]
+  (go
+    (when msg
+      (let [self-ref (::self ctx)
+            receive (:receive (deref (::handlers ctx)))]
+        (log! self-ref "got msg:" msg)
+        (<! (->> msg
+                 (run-msg-handler receive)
+                 (trap-stopped-kw ctx)
+                 (trap-anomalies ctx)))
+        (log! self-ref "done processing msg, recurring..."))
+      true)))
 
 (defn- run-loop!
   [ctx]
   (init-actor! ctx)
-  (let [self-ref (::self ctx)]
-    (go-loop []
-      (let [receive (:receive (deref (::handlers ctx)))
-            ports (active-ports ctx)
-            [msg _port] (async/alts! ports :priority true)]
-        (when msg
-          (log! self-ref "got msg:" msg)
-          (<! (process-received-result ctx (receive msg)))
-          (log! self-ref "done processing msg, recurring...")
-          (recur))))))
+  (go-loop []
+    (let [ports (active-ports ctx)
+          [msg _port] (async/alts! ports :priority true)]
+      (when (<! (handle-message! ctx msg))
+        (recur)))))
 
 (defn- user-guard
   [props ctx]
@@ -355,15 +459,6 @@
     (run-loop! system-ctx)
     result-ch))
 
-(defn get-system-ctx
-  []
-  (deref !system-ctx))
-
-(defn find-child
-  [ctx id]
-  (let [children (deref (::children ctx))]
-    (children id)))
-
 (defn ask-actor
   [{:keys [target msg reply-ch]} ctx]
   (tell! target (assoc msg :from (::self ctx)))
@@ -384,7 +479,7 @@
    {:pre [(s/valid? ::actor-ref actor-ref)
           (s/valid? ::msg msg)]
     :post [(s/valid? ::port %)]}
-   (let [temp-ctx (find-child (get-system-ctx) "temp")
+   (let [temp-ctx (:context (get-child (get-system-ctx) "temp"))
          ch (chan)
          timeout-ch (async/timeout timeout-ms)]
      (spawn! temp-ctx (uuid/v4) (partial ask-actor
@@ -409,8 +504,7 @@
   (defn greeter
     [greeting ctx]
     (log! (::self ctx) "Initialising...")
-    (let [self (::self ctx)
-          state (atom 0)]
+    (let [state (atom 0)]
       (spawn! ctx "my-hero" my-hero)
 
       (fn [msg]
@@ -419,6 +513,11 @@
                (println (format "%s %s!" greeting who))
                [{:subj :wassup?}]
                (reply! msg "WASSUP!!!")
+               [{:subj :throw}]
+               (throw (ex-info "Something went wrong!" {:reason :requested}))
+               [{:subj :inc}]
+               (let [x (swap! state inc)]
+                 (log! (::self ctx) "X:" x))
                :else (receive! ctx msg)))))
   
   (def !main-actor-ref (atom nil))
@@ -427,17 +526,17 @@
               (<! (<start-system! "greeter" (partial greeter "Hello")))))
   
   (tell! @!main-actor-ref {:subj :greet :body "Andrey"})
+  (tell! @!main-actor-ref {:subj :inc})
   (go (println "reply:"
                (<! (<ask! @!main-actor-ref {:subj :wassup?}))))
   (tell! @!main-actor-ref {:subj ::poison-pill})
+  (tell! @!main-actor-ref {:subj :throw})
 
   ;; helpers
 
   (tap> @!main-actor-ref)
   
-  (reset! !behaviors {})
-
-  (ns-unmap (find-ns 'eploko.globe5) 'log)
+  (ns-unmap (find-ns 'globe.core) 'log)
 
   ;; all names in the ns
   (filter #(str/starts-with? % "#'eploko.globe5/")

@@ -1,12 +1,35 @@
 (ns globe.async
   "`core.async` additions."
-  (:require [clojure.core.async :as async :refer [go-loop]]
-            [clojure.core.async.impl.protocols :as async-protocols]))
+  (:require [clojure.core.async :as async :refer [go go-loop]]
+            [clojure.core.async.impl.protocols :as async-protocols]
+            [cognitect.anomalies :as anom]))
 
 (defn chan?
   "Returns `true` if `x` is a `core.async` channel."
   [x]
   (satisfies? clojure.core.async.impl.protocols/ReadPort x))
+
+(defn throw-err
+  "Throw if is error, will be different in ClojureScript"
+  [v] 
+  (if (isa? java.lang.Throwable v) (throw v) v))
+
+(defmacro <?
+  "Version of <! that throw Exceptions that come out of a channel."
+  [c]
+  `(throw-err (async/<! ~c)))
+
+(defmacro err-or
+  "If body throws an exception, catch it and return an anomaly." 
+  [& body]
+  `(try 
+     ~@body
+     (catch Throwable e#
+       {::anom/category ::anom/fault
+        ::anom/message (.getMessage e#)})))
+
+(defmacro go-safe [& body]
+  `(go (err-or ~@body)))
 
 (defn <take-all
   [& chs]
