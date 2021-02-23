@@ -352,22 +352,24 @@
     (cleanup)))
 
 (defn- trap-stopped-kw
-  [ctx result]
-  (if (= ::stopped result)
-    (handle-poison-pill ctx)
-    result))
+  [ctx ch]
+  (go
+    (let [result (err-or (<? ch))]
+      (if (= ::stopped result)
+        (handle-poison-pill ctx)
+        result))))
 
-(defn- unchan-result
+(defn- ensure-chan
   [result]
-  (go-safe
-   (loop [result result]
-     (if (chan? result)
-       (recur (<? result))
-       result))))
+  (if (chan? result)
+    result
+    (if result
+      (async/to-chan! [result])
+      (async/to-chan! []))))
 
 (defn- run-msg-handler
   [h msg]
-  (unchan-result (err-or (h msg))))
+  (ensure-chan (err-or (h msg))))
 
 (defn- trap-anomalies
   [ctx ch]
