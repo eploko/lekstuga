@@ -67,3 +67,7 @@
 
 (defprotocol HasMode
   (switch-to-mode! [this mode] "Switches to the mode."))
+
+(defprotocol Linkable
+  (link! [this link])
+  (unlink! [this link]))

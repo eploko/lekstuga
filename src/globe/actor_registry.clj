@@ -2,7 +2,8 @@
   (:require
    [globe.actors :as actors]
    [globe.api :as api]
-   [globe.uris :as uris]))
+   [globe.uris :as uris]
+   [globe.msg :as msg]))
 
 (defrecord LocalActorRegistry [root-path !init-data]
   api/ActorRegistry
@@ -13,7 +14,10 @@
   (spawn! [this actor-id actor-fn actor-props]
     (let [user-guardian (:user-guardian @!init-data)
           user-guardian-cell (api/underlying user-guardian)]
-      (api/spawn! user-guardian-cell actor-id actor-fn actor-props))))
+      (api/tell! user-guardian (msg/make-signal :globe/new-child))
+      (let [child-ref (api/spawn! user-guardian-cell actor-id actor-fn actor-props)]
+        (api/link! child-ref user-guardian)
+        child-ref))))
 
 (defn local-actor-registry
   [system-id]

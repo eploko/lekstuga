@@ -5,7 +5,7 @@
    [globe.cell :as cell]))
 
 (defrecord LocalActorRef [system uri actor-fn actor-props supervisor cell
-                          mailbox dispatcher]
+                          mailbox dispatcher !links !dead?]
   api/Addressable
   (uri [_] uri)
   
@@ -16,8 +16,12 @@
   api/ActorRefWithCell
   (underlying [_] cell)
   (register-death! [this]
+    (reset! !dead? true)
     (api/tell! supervisor (-> (msg/make-signal :globe/child-terminated)
-                              (msg/from this))))
+                              (msg/from this)))
+    (doseq [link (first (swap-vals! !links #{}))]
+      (api/tell! link (-> (msg/make-msg :globe/terminated)
+                          (msg/from this)))))
 
   api/Startable
   (start! [this]
@@ -34,6 +38,16 @@
     (api/stop-dispatching! dispatcher)
     (api/terminate! mailbox)
     (api/register-death! this))
+
+  api/Linkable
+  (link! [this link]
+    (if @!dead?
+      (api/tell! link (-> (msg/make-msg :globe/terminated)
+                          (msg/from this)))
+      (swap! !links conj link)))
+  
+  (unlink! [this link]
+    (swap! !links disj link))
 
   clojure.lang.IFn
   (toString [_]
@@ -58,7 +72,9 @@
                :supervisor supervisor
                :cell cell
                :mailbox mailbox
-               :dispatcher (api/dispatcher system)})]
+               :dispatcher (api/dispatcher system)
+               :!links (atom #{})
+               :!dead? (atom false)})]
     (api/put! mailbox (msg/make-signal :globe/create))
     (cell/init! cell inst)
     (api/start! inst)

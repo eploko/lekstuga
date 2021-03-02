@@ -37,7 +37,7 @@
     (swap! !children conj child-ref))
   
   (remove-child! [_ child-ref]
-    (logger/log! @!self "removing child:" child-ref)
+    (logger/log! @!self "removing child:" (api/uri child-ref))
     (swap! !children disj child-ref)
     (when-not (seq @!children)
       (api/tell! @!self (msg/make-signal ::children-stopped))))
@@ -74,7 +74,7 @@
            [::stopping {::msg/subj ::children-stopped}]
            (api/terminate! this)
            :else 
-           (println "Handling uhhandled message:" (::msg/subj msg))))
+           (logger/log! @!self "Unhandled message [" @!mode "]:" (::msg/subj msg))))
 
   api/HasMode
   (switch-to-mode! [this mode]
@@ -82,6 +82,7 @@
 
   api/Terminatable
   (terminate! [this]
+    (logger/log! @!self "Terminating...")
     (api/terminate! @!self))
 
   api/Suspendable
