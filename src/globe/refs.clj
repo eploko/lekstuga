@@ -3,21 +3,22 @@
    [globe.api :as api]
    [globe.cell :as cell]))
 
-(defrecord LocalActorRef [system uri actor-fn actor-props supervisor cell]
+(defrecord LocalActorRef [system uri actor-fn actor-props supervisor cell
+                          mailbox dispatcher]
   api/Addressable
   (uri [_] uri)
   
   api/MessageTarget
   (tell! [this msg]
-    (println "Telling:" msg))
+    (api/put! mailbox msg))
 
   api/ActorRefWithCell
   (underlying [_] cell)
 
   api/Startable
   (start! [this]
-    ;; TODO: WRITE ME
-    )
+    (println "Starting ref...")
+    (api/start-dispatching! dispatcher mailbox cell))
 
   clojure.lang.IFn
   (toString [_]
@@ -39,8 +40,11 @@
                :actor-fn actor-fn
                :actor-props actor-props
                :supervisor supervisor
-               :cell cell})]
+               :cell cell
+               :mailbox (api/make-mailbox system)
+               :dispatcher (api/dispatcher system)})]
     (cell/init! cell inst)
+    (api/start! inst)
     inst))
 
 (comment

@@ -14,7 +14,11 @@
           child-ref (api/local-actor-ref system child-uri actor-fn actor-props @!self)]
       (api/add-child! this child-ref)
       (api/start! child-ref)
-      child-ref)))
+      child-ref))
+
+  api/MessageHandler
+  (handle-message! [this msg]
+    (println "Handling message...")))
 
 (defn make-cell
   [system actor-fn actor-props supervisor]

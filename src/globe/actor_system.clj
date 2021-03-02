@@ -2,6 +2,8 @@
   (:require [clojure.string :as str]
             [globe.actor-registry :as registry]
             [globe.api :as api]
+            [globe.dispatcher :as dispatcher]
+            [globe.mailbox :as mb]
             [globe.refs :as refs]))
 
 (defrecord ActorSystem [actor-registry]
@@ -12,6 +14,14 @@
   api/ActorRefFactory
   (local-actor-ref [this child-uri actor-fn actor-props supervisor]
     (refs/local-actor-ref this child-uri actor-fn actor-props supervisor))
+
+  api/MailboxFactory
+  (make-mailbox [this]
+    (mb/simple-mailbox))
+
+  api/DispatcherFactory
+  (dispatcher [this]
+    (dispatcher/make-dispatcher))
 
   clojure.lang.IFn
   (toString [_]

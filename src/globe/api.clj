@@ -1,5 +1,8 @@
 (ns globe.api)
 
+(defprotocol MailboxFactory
+  (make-mailbox [this] "Makes a new mailbox."))
+
 (defprotocol Spawner
   "Allows spawning other actors as children of `this`."
   (spawn! [this actor-id actor-fn actor-props]
@@ -29,3 +32,20 @@
 
 (defprotocol ActorRefWithCell
   (underlying [this] "Returns the underlying actor cell."))
+
+(defprotocol Suspendable
+  (suspend! [this])
+  (resume! [this]))
+
+(defprotocol Mailbox
+  (put! [this msg]))
+
+(defprotocol Dispatcher
+  (start-dispatching! [this mailbox cell])
+  (stop-dispatching! [this]))
+
+(defprotocol DispatcherFactory
+  (dispatcher [this] "Returns a dispatcher."))
+
+(defprotocol MessageHandler
+  (handle-message! [this msg] "Handles the given message."))
