@@ -5,6 +5,10 @@
   (spawn! [this actor-id actor-fn actor-props]
     "Spawns a new child actor."))
 
+(defprotocol ActorRefFactory
+  (local-actor-ref [this child-uri actor-fn actor-props supervisor]
+    "Creates a new actor ref."))
+
 (defprotocol ActorRegistry
   "Keeps track of main actors in the system and creates new refs."
   (root-guardian [this] "Returns a ref to the root guardian."))

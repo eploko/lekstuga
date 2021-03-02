@@ -6,3 +6,5 @@
 (def log! #'logger/log!)
 (def start-system! #'system/start!)
 (def spawn! #'api/spawn!)
+(def tell! #'api/tell!)
+

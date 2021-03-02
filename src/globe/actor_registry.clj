@@ -2,7 +2,6 @@
   (:require
    [globe.actors :as actors]
    [globe.api :as api]
-   [globe.refs :as refs]
    [globe.uris :as uris]))
 
 (defrecord LocalActorRegistry [root-path !init-data]
@@ -25,12 +24,12 @@
 (defn init!
   [^LocalActorRegistry this system]
   (let [root-path (:root-path this)
-        root-guardian (refs/local-actor-ref system root-path actors/root-guardian nil nil)
+        root-guardian (api/local-actor-ref system root-path actors/root-guardian nil nil)
         root-cell (api/underlying root-guardian)
         user-path (uris/child-uri root-path "user")
-        user-guardian (refs/local-actor-ref system user-path actors/user-guardian nil root-guardian)
+        user-guardian (api/local-actor-ref system user-path actors/user-guardian nil root-guardian)
         system-path (uris/child-uri root-path "system")
-        system-guardian (refs/local-actor-ref system system-path actors/system-guardian nil root-guardian)]
+        system-guardian (api/local-actor-ref system system-path actors/system-guardian nil root-guardian)]
     (reset! (:!init-data this)
             {:system system
              :root-guardian root-guardian

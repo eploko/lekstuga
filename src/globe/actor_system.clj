@@ -1,12 +1,17 @@
 (ns globe.actor-system
   (:require [clojure.string :as str]
             [globe.actor-registry :as registry]
-            [globe.api :as api]))
+            [globe.api :as api]
+            [globe.refs :as refs]))
 
 (defrecord ActorSystem [actor-registry]
   api/Spawner
   (spawn! [_ actor-id actor-fn actor-props]
     (api/spawn! actor-registry actor-id actor-fn actor-props))
+
+  api/ActorRefFactory
+  (local-actor-ref [this child-uri actor-fn actor-props supervisor]
+    (refs/local-actor-ref this child-uri actor-fn actor-props supervisor))
 
   clojure.lang.IFn
   (toString [_]

@@ -1,7 +1,6 @@
 (ns globe.cell
   (:require
    [globe.api :as api]
-   [globe.refs :as refs]
    [globe.uris :as uris]))
 
 (defrecord Cell [system !self actor-fn actor-props supervisor !children]
@@ -12,7 +11,7 @@
   api/Spawner
   (spawn! [this actor-id actor-fn actor-props]
     (let [child-uri (uris/child-uri (api/uri @!self) actor-id)
-          child-ref (refs/local-actor-ref system child-uri actor-fn actor-props @!self)]
+          child-ref (api/local-actor-ref system child-uri actor-fn actor-props @!self)]
       (api/add-child! this child-ref)
       (api/start! child-ref)
       child-ref)))
