@@ -38,8 +38,8 @@
   (def main-actor (globe/spawn! system "greeter" greeter "Hello"))
   (type main-actor)
 
-  (globe/tell! main-actor {:subj :greet :body "Andrey"})
-  (tell! main-actor {:subj :inc})
+  (globe/tell! main-actor (globe/msg :greet "Andrey"))
+  (globe/tell! main-actor (globe/msg :inc))
   (go (println "reply:"
                (<! (<ask! main-actor {:subj :wassup?}))))
   (tell! main-actor {:subj ::poison-pill})
