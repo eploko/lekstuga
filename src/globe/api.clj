@@ -9,7 +9,7 @@
     "Spawns a new child actor."))
 
 (defprotocol ActorRefFactory
-  (local-actor-ref [this child-uri actor-fn actor-props supervisor]
+  (local-actor-ref [this child-uri actor-fn actor-props supervisor opts]
     "Creates a new actor ref."))
 
 (defprotocol ActorRegistry

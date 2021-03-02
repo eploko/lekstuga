@@ -12,8 +12,8 @@
     (api/spawn! actor-registry actor-id actor-fn actor-props))
 
   api/ActorRefFactory
-  (local-actor-ref [this child-uri actor-fn actor-props supervisor]
-    (refs/local-actor-ref this child-uri actor-fn actor-props supervisor))
+  (local-actor-ref [this child-uri actor-fn actor-props supervisor opts]
+    (refs/local-actor-ref this child-uri actor-fn actor-props supervisor opts))
 
   api/MailboxFactory
   (make-mailbox [this]

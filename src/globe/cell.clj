@@ -45,7 +45,7 @@
   api/Spawner
   (spawn! [this actor-id actor-fn actor-props]
     (let [child-uri (uris/child-uri (api/uri @!self) actor-id)
-          child-ref (api/local-actor-ref system child-uri actor-fn actor-props @!self)]
+          child-ref (api/local-actor-ref system child-uri actor-fn actor-props @!self nil)]
       (api/add-child! this child-ref)
       (api/start! child-ref)
       child-ref))
@@ -69,6 +69,8 @@
     (match [@!mode msg]
            [::running {::msg/subj :globe/poison-pill}]
            (handle-poison-pill this)
+           [::running {::msg/subj ::children-stopped}]
+           nil
            [_ {::msg/subj :globe/child-terminated ::msg/from child-ref}]
            (api/remove-child! this child-ref)
            [::stopping {::msg/subj ::children-stopped}]

@@ -28,12 +28,17 @@
 (defn init!
   [^LocalActorRegistry this system]
   (let [root-path (:root-path this)
-        root-guardian (api/local-actor-ref system root-path actors/root-guardian nil nil)
+        root-guardian (api/local-actor-ref
+                       system root-path actors/root-guardian nil nil nil)
         root-cell (api/underlying root-guardian)
         user-path (uris/child-uri root-path "user")
-        user-guardian (api/local-actor-ref system user-path actors/user-guardian nil root-guardian)
+        user-guardian (api/local-actor-ref
+                       system user-path actors/user-guardian nil root-guardian
+                       {:perform-start false})
         system-path (uris/child-uri root-path "system")
-        system-guardian (api/local-actor-ref system system-path actors/system-guardian nil root-guardian)]
+        system-guardian (api/local-actor-ref
+                         system system-path actors/system-guardian nil root-guardian
+                         {:perform-start false})]
     (reset! (:!init-data this)
             {:system system
              :root-guardian root-guardian

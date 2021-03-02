@@ -61,7 +61,9 @@
   (print-simple (.toString o) w))
 
 (defn local-actor-ref
-  [system uri actor-fn actor-props supervisor]
+  [system uri actor-fn actor-props supervisor
+   {:keys [perform-start]
+    :or {perform-start true}}]
   (let [mailbox (api/make-mailbox system)
         cell (cell/make-cell system actor-fn actor-props supervisor)
         inst (map->LocalActorRef
@@ -77,7 +79,7 @@
                :!dead? (atom false)})]
     (api/put! mailbox (msg/make-signal :globe/create))
     (cell/init! cell inst)
-    (api/start! inst)
+    (when perform-start (api/start! inst))
     inst))
 
 (comment
