@@ -1,38 +1,36 @@
 (ns user
-  (:require [clojure.core.match :refer [match]]
-            [globe.core :as globe]))
-
+  (:require
+   [clojure.core.match :refer [match]]
+   [globe.core :as globe]
+   [globe.msg :as msg]))
 
 (comment
-  (defn receive!
-    [ctx msg])
-
   (defn reply!
     [ctx msg])
   
   (defn my-hero
-    [ctx]
-    (globe/log! (::self ctx) "Initialising...")
-    (partial receive! ctx))
+    [ctx _props]
+    (globe/log! (globe/self ctx) "Initialising...")
+    (partial globe/handle-message! ctx))
 
   (defn greeter
-    [greeting ctx]
-    (globe/log! (::self ctx) "Initialising...")
+    [ctx greeting]
+    (globe/log! (globe/self ctx) "Initialising...")
     (let [state (atom 0)]
-      (globe/spawn! ctx "my-hero" my-hero)
+      (globe/spawn! ctx "my-hero" my-hero nil)
 
       (fn [msg]
         (match [msg]
-               [{:subj :greet :body who}]
+               [{::msg/subj :greet ::msg/body who}]
                (println (format "%s %s!" greeting who))
-               [{:subj :wassup?}]
+               [{::msg/subj :wassup?}]
                (reply! msg "WASSUP!!!")
-               [{:subj :throw}]
+               [{::msg/subj :throw}]
                (throw (ex-info "Something went wrong!" {:reason :requested}))
-               [{:subj :inc}]
+               [{::msg/subj :inc}]
                (let [x (swap! state inc)]
-                 (globe/log! (::self ctx) "X:" x))
-               :else (receive! ctx msg)))))
+                 (globe/log! (globe/self ctx) "X:" x))
+               :else (globe/handle-message! ctx msg)))))
 
   (def system (globe/start-system!))
   (def main-actor (globe/spawn! system "greeter" greeter "Hello"))
@@ -42,8 +40,8 @@
   (globe/tell! main-actor (globe/msg :inc))
   (go (println "reply:"
                (<! (<ask! main-actor {:subj :wassup?}))))
-  (tell! main-actor {:subj ::poison-pill})
-  (tell! main-actor {:subj :throw})
+  (globe/tell! main-actor (globe/msg :globe/poison-pill))
+  (globe/tell! main-actor (globe/msg :throw))
 
   ;; helpers
 

@@ -9,5 +9,7 @@
 (def spawn! #'api/spawn!)
 (def tell! #'api/tell!)
 (def msg #'msg/make-msg)
+(def self #'api/self)
+(def handle-message! #'api/handle-message!)
 
 

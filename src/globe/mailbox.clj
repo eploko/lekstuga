@@ -20,6 +20,11 @@
   (resume! [_]
     (reset! !suspended? false))
 
+  api/Terminatable
+  (terminate! [this]
+    (async/close! signals)
+    (async/close! messages))
+
   IDeref
   (deref [_]
     (if @!suspended?

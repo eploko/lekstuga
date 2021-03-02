@@ -9,8 +9,8 @@
     (let [signal-ch (reset! !signal-ch (async/chan))]
       (go-loop []
         (let [ports (cons signal-ch @mailbox)
-              [msg port] (async/alts! ports :priority true)]
-          (when-not (identical? port signal-ch)
+              [msg _] (async/alts! ports :priority true)]
+          (when msg
             (api/handle-message! cell msg)
             (recur))))))
   

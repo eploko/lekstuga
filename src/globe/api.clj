@@ -19,8 +19,12 @@
 (defprotocol Startable
   (start! [this] "Start this cell, i.e. attach it to the dispatcher."))
 
+(defprotocol Terminatable
+  (terminate! [this] "Terminates the process."))
+
 (defprotocol Children
-  (add-child! [this child-ref]))
+  (add-child! [this child-ref])
+  (remove-child! [this child-ref]))
 
 (defprotocol MessageTarget
   "An entity able to receive messages."
@@ -30,8 +34,12 @@
 (defprotocol Addressable
   (uri [this] "Returns the URI."))
 
+(defprotocol HasSelf
+  (self [this] "Returns the self ref."))
+
 (defprotocol ActorRefWithCell
-  (underlying [this] "Returns the underlying actor cell."))
+  (underlying [this] "Returns the underlying actor cell.")
+  (register-death! [this] "Handles death of the cell."))
 
 (defprotocol Suspendable
   (suspend! [this])
@@ -49,3 +57,13 @@
 
 (defprotocol MessageHandler
   (handle-message! [this msg] "Handles the given message."))
+
+(defprotocol UnhandledMessageHandler
+  (handle-unhandled-message! [this msg]
+    "Figures out what to do w/ an unhandled message."))
+
+(defprotocol HasBehavior
+  (become! [this behavior-fn] "Sets a new behavior."))
+
+(defprotocol HasMode
+  (switch-to-mode! [this mode] "Switches to the mode."))
