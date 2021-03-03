@@ -63,3 +63,10 @@
   Use at your own risk."
   []
   (UnboundBuffer. (atom [])))
+
+(defn <ensure-chan
+  [x]
+  (cond
+    (chan? x) x
+    (nil? x) (async/to-chan! [])
+    :else (async/to-chan! [x])))

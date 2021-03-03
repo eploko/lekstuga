@@ -29,15 +29,15 @@
 (defn system-guardian
   [ctx _props]
   (logger/log! (api/self ctx) "Initialising...")
-  (api/spawn! ctx "temp" temp-guardian nil)
+  (api/spawn! ctx "temp" temp-guardian nil nil)
   (partial api/handle-message! ctx))
 
 (defn root-guardian
   [ctx _props]
   (logger/log! (api/self ctx) "Initialising...")
   (let [user-guardian
-        (api/spawn! ctx "user" user-guardian nil)]
-    (api/spawn! ctx "system" system-guardian nil)
+        (api/spawn! ctx "user" user-guardian nil nil)]
+    (api/spawn! ctx "system" system-guardian nil nil)
     (api/link! user-guardian (api/self ctx))
 
     (api/on-cleanup ctx (fn []

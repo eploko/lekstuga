@@ -28,9 +28,9 @@
    (let [temp-cell (-> actor-ref api/system api/registry api/temp-guardian api/underlying)
          ch (chan)
          timeout-ch (async/timeout timeout-ms)
-         ask-actor-ref (api/spawn! temp-cell (uuid/v4) ask-actor {:target actor-ref
-                                                                  :msg msg
-                                                                  :reply-ch ch})]
+         ask-actor-ref (api/spawn! temp-cell (uuid/v4) ask-actor
+                                   {:target actor-ref :msg msg :reply-ch ch}
+                                   nil)]
      (go
        (let [[v p] (async/alts! [ch timeout-ch])]
          (if (= p timeout-ch)

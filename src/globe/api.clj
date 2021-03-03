@@ -8,7 +8,7 @@
 
 (defprotocol Spawner
   "Allows spawning other actors as children of `this`."
-  (spawn! [this actor-id actor-fn actor-props]
+  (spawn! [this actor-id actor-fn actor-props opts]
     "Spawns a new child actor."))
 
 (defprotocol ActorRefFactory
@@ -31,9 +31,13 @@
   (terminate! [this] "Terminates the process."))
 
 (defprotocol Children
-  (add-child! [this child-ref])
+  (add-child! [this child-ref on-failure])
   (remove-child! [this child-ref])
   (get-child-ref [this child-name]))
+
+(defprotocol Supervisor
+  (supervising-strategy [this child-ref]
+    "Returns the supervising strategy for the child ref."))
 
 (defprotocol MessageTarget
   "An entity able to receive messages."
@@ -44,8 +48,9 @@
   (uri [this] "Returns the URI.")
   (get-name [this] "Returns the last segment of the underlying URI."))
 
-(defprotocol HasSelf
-  (self [this] "Returns the self ref."))
+(defprotocol PartOfTree
+  (self [this] "Returns the self ref.")
+  (supervisor [this] "Returns the ref to the supervisor."))
 
 (defprotocol HasSystem
   (system [this] "Returns the underlying system."))
@@ -89,4 +94,6 @@
   (on-cleanup [this f]))
 
 (defprotocol LifeCycle
-  (cleanup! [this]))
+  (cleanup! [this])
+  (restart! [this])
+  (init! [this]))

@@ -1,7 +1,7 @@
 (ns globe.dispatcher
   (:require
    [globe.api :as api]
-   [clojure.core.async :as async :refer [go-loop]]))
+   [clojure.core.async :as async :refer [<! go-loop]]))
 
 (defrecord Dispatcher [!signal-ch]
   api/Dispatcher
@@ -11,7 +11,7 @@
         (let [ports (cons signal-ch @mailbox)
               [msg _] (async/alts! ports :priority true)]
           (when msg
-            (api/handle-message! cell msg)
+            (<! (api/handle-message! cell msg))
             (recur))))))
   
   (stop-dispatching! [this]

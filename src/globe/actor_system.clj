@@ -11,8 +11,8 @@
   (registry [this] actor-registry)
   
   api/Spawner
-  (spawn! [_ actor-id actor-fn actor-props]
-    (api/spawn! actor-registry actor-id actor-fn actor-props))
+  (spawn! [_ actor-id actor-fn actor-props opts]
+    (api/spawn! actor-registry actor-id actor-fn actor-props opts))
 
   api/ActorRefFactory
   (local-actor-ref [this child-uri actor-fn actor-props supervisor opts]

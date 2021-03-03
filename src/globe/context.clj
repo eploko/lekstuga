@@ -4,12 +4,12 @@
 
 (defrecord Context [cell]
   api/Spawner
-  (spawn! [this actor-id actor-fn actor-props]
-    (api/spawn! cell actor-id actor-fn actor-props))
+  (spawn! [this actor-id actor-fn actor-props opts]
+    (api/spawn! cell actor-id actor-fn actor-props opts))
 
-  api/HasSelf
-  (self [_]
-    (api/self cell))
+  api/PartOfTree
+  (self [_] (api/self cell))
+  (supervisor [_] (api/supervisor cell))
 
   api/HasBehavior
   (become! [_ behavior-fn]

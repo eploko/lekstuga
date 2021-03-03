@@ -16,7 +16,7 @@
     [ctx greeting]
     (globe/log! (globe/self ctx) "Initialising...")
     (let [state (atom 0)]
-      (globe/spawn! ctx "my-hero" my-hero nil)
+      (globe/spawn! ctx "my-hero" my-hero nil nil)
 
       (fn [msg]
         (match msg
@@ -32,7 +32,7 @@
                :else (globe/handle-message! ctx msg)))))
 
   (def system (globe/start-system!))
-  (def main-actor (globe/spawn! system "greeter" greeter "Hello"))
+  (def main-actor (globe/spawn! system "greeter" greeter "Hello" nil))
 
   (globe/tell! main-actor (globe/msg :greet "Andrey"))
   (globe/tell! main-actor (globe/msg :inc))

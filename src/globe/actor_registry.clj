@@ -18,11 +18,11 @@
         (api/resolve-actor-ref (uris/child-uri root-path "system/temp"))))
   
   api/Spawner
-  (spawn! [this actor-id actor-fn actor-props]
+  (spawn! [this actor-id actor-fn actor-props opts]
     (let [user-guardian (api/user-guardian this)
           user-guardian-cell (api/underlying user-guardian)]
       (api/tell! user-guardian (msg/make-signal :globe/new-child))
-      (let [child-ref (api/spawn! user-guardian-cell actor-id actor-fn actor-props)]
+      (let [child-ref (api/spawn! user-guardian-cell actor-id actor-fn actor-props opts)]
         (api/link! child-ref user-guardian)
         (api/on-cleanup user-guardian-cell #(api/unlink! child-ref user-guardian))
         child-ref)))
