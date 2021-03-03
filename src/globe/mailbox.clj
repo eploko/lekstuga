@@ -36,4 +36,4 @@
   (map->SimpleMailbox
    {:signals (async/chan (gasync/unbound-buf))
     :messages (async/chan (gasync/unbound-buf))
-    :!suspended? (atom false)}))
+    :!suspended? (atom true)}))

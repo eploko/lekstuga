@@ -94,7 +94,6 @@
                :dispatcher (api/dispatcher system)
                :!links (atom #{})
                :!dead? (atom false)})]
-    (api/put! mailbox (msg/make-signal :globe/create))
     (cell/init! cell inst)
     (when perform-start (api/start! inst))
     inst))

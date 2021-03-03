@@ -77,14 +77,6 @@
   (api/switch-to-mode! cell ::restarting)
   (tell-children-to-stop cell))
 
-(defn- default-behavior
-  [ctx cell actor-fn actor-props msg]
-  (match msg
-         {::msg/subj :globe/create}
-         (api/become! cell (actor-fn ctx actor-props))
-         :else 
-         (logger/warn (api/self ctx) "Default behavior, message ignored:" (::msg/subj msg))))
-
 (defrecord Cell [system !self actor-fn actor-props supervisor
                  !children !behavior-fn !mode !life-cycle-hooks]
   api/Children
@@ -193,15 +185,13 @@
   
   (restart-actor! [this]
     (api/cleanup-actor! this)
-    (api/init-actor! this)
-    (api/tell! @!self (msg/make-signal :globe/create))
-    (api/resume! this))
+    (api/init-actor! this))
   
   (init-actor! [this]
-    (let [ctx (context/make-context this)
-          behavior-fn (partial #'default-behavior ctx this actor-fn actor-props)]
-      (api/become! this behavior-fn)
-      (api/switch-to-mode! this ::running))
+    (let [ctx (context/make-context this)]
+      (api/become! this (actor-fn ctx actor-props))
+      (api/switch-to-mode! this ::running)
+      (api/resume! this))
     this))
 
 (defn make-cell
@@ -220,5 +210,6 @@
 (defn init!
   [cell self]
   (reset! (:!self cell) self)
-  (api/init-actor! cell))
+  (api/init-actor! cell)
+  cell)
 
