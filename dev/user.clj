@@ -1,10 +1,10 @@
 (ns user
   (:require
    [clojure.core.match :refer [match]]
-   [globe.api :as api]
    [globe.core :as globe]
    [globe.msg :as msg]
-   [clojure.core.async :as async :refer [<! go]]))
+   [clojure.core.async :as async :refer [<! go]]
+   [clojure.string :as str]))
 
 (comment
   (defn my-hero
@@ -19,24 +19,20 @@
       (globe/spawn! ctx "my-hero" my-hero nil)
 
       (fn [msg]
-        (match [msg]
-               [{::msg/subj :greet ::msg/body who}]
+        (match msg
+               {::msg/subj :greet ::msg/body who}
                (println (format "%s %s!" greeting who))
-               [{::msg/subj :wassup?}]
+               {::msg/subj :wassup?}
                (globe/reply! msg "WASSUP!!!")
-               [{::msg/subj :throw}]
+               {::msg/subj :throw}
                (throw (ex-info "Something went wrong!" {:reason :requested}))
-               [{::msg/subj :inc}]
+               {::msg/subj :inc}
                (let [x (swap! state inc)]
                  (globe/log! (globe/self ctx) "X:" x))
                :else (globe/handle-message! ctx msg)))))
 
   (def system (globe/start-system!))
-  (def registry (api/registry system))
-  (api/resolve-actor-ref registry "globe://default@localhost/user")
-  
   (def main-actor (globe/spawn! system "greeter" greeter "Hello"))
-  (type main-actor)
 
   (globe/tell! main-actor (globe/msg :greet "Andrey"))
   (globe/tell! main-actor (globe/msg :inc))
@@ -49,12 +45,12 @@
 
   (tap> main-actor)
   
-  (ns-unmap (find-ns 'globe.core) 'log)
+  (ns-unmap *ns* 'registry)
 
   ;; all names in the ns
-  (filter #(str/starts-with? % "#'eploko.globe5/")
+  (filter #(str/starts-with? % "#'user/")
           (map str
                (vals
-                (ns-map (find-ns 'eploko.globe5)))))
+                (ns-map (find-ns 'user)))))
   ,)
 
