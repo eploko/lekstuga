@@ -113,13 +113,11 @@
   (handle-message! [this msg]
     (logger/debug @!self "Got message:" msg)
     (if-let [behavior-fn @!behavior-fn]
-      (do
-        (logger/debug @!self "Using behavior:" behavior-fn)
-        (async/go-loop [result (err-or (behavior-fn msg))]
-          (cond
-            (chan? result) (recur (<! result))
-            (::anom/category result) (handle-anomaly this msg result)
-            :else result)))
+      (async/go-loop [result (err-or (behavior-fn msg))]
+        (cond
+          (chan? result) (recur (<! result))
+          (::anom/category result) (handle-anomaly this msg result)
+          :else result))
       (logger/warn @!self "No behavior, message ignored:" (::msg/subj msg))))
 
   api/HasBehavior
@@ -158,6 +156,7 @@
 
   api/HasMode
   (switch-to-mode! [this mode]
+    (logger/debug @!self "Switched to mode:" mode)
     (reset! !mode mode))
 
   api/Terminatable
