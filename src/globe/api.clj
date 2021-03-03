@@ -17,7 +17,8 @@
 
 (defprotocol ActorRegistry
   "Keeps track of main actors in the system and creates new refs."
-  (root-guardian [this] "Returns a ref to the root guardian."))
+  (root-guardian [this] "Returns a ref to the root guardian.")
+  (user-guardian [this] "Returns a ref to the user guardian."))
 
 (defprotocol ActorRefResolver
   (resolve-actor-ref [this str-or-uri] "Returns the actor ref."))

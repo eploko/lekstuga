@@ -3,16 +3,20 @@
    [globe.actors :as actors]
    [globe.api :as api]
    [globe.uris :as uris]
-   [globe.msg :as msg]))
+   [globe.msg :as msg]
+   [globe.refs.bubble :as refs-bubble]))
 
 (defrecord LocalActorRegistry [root-path !init-data]
   api/ActorRegistry
-  (root-guardian [this]
+  (root-guardian [_]
     (:root-guardian @!init-data))
+  (user-guardian [this]
+    (-> (api/root-guardian this)
+        (api/resolve-actor-ref (uris/child-uri root-path "user"))))
   
   api/Spawner
   (spawn! [this actor-id actor-fn actor-props]
-    (let [user-guardian (:user-guardian @!init-data)
+    (let [user-guardian (api/user-guardian this)
           user-guardian-cell (api/underlying user-guardian)]
       (api/tell! user-guardian (msg/make-signal :globe/new-child))
       (let [child-ref (api/spawn! user-guardian-cell actor-id actor-fn actor-props)]
@@ -34,24 +38,12 @@
 
 (defn init!
   [^LocalActorRegistry this system]
-  (let [root-path (:root-path this)
+  (let [bubble-ref (refs-bubble/bubble-ref)
+        root-path (:root-path this)
         root-guardian (api/local-actor-ref
-                       system root-path actors/root-guardian nil nil nil)
-        root-cell (api/underlying root-guardian)
-        user-path (uris/child-uri root-path "user")
-        user-guardian (api/local-actor-ref
-                       system user-path actors/user-guardian nil root-guardian
-                       {:perform-start false})
-        system-path (uris/child-uri root-path "system")
-        system-guardian (api/local-actor-ref
-                         system system-path actors/system-guardian nil root-guardian
-                         {:perform-start false})]
+                       system root-path actors/root-guardian nil bubble-ref
+                       {:perform-start false})]
     (reset! (:!init-data this)
             {:system system
-             :root-guardian root-guardian
-             :user-guardian user-guardian
-             :system-guardian system-guardian})
-    (api/add-child! root-cell user-guardian)
-    (api/start! user-guardian)
-    (api/add-child! root-cell system-guardian)
-    (api/start! system-guardian)))
+             :root-guardian root-guardian})
+    (api/start! root-guardian)))

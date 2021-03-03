@@ -10,9 +10,9 @@
 (defn- tell-children!
   [cell msg & {:keys [on-no-children]
                :or {on-no-children (fn [])}}]
-  (let [child-refs (deref (:!children cell))]
-    (if (seq child-refs)
-      (doseq [child-ref child-refs]
+  (let [children (deref (:!children cell))]
+    (if (seq children)
+      (doseq [child-ref (vals children)]
         (api/tell! child-ref msg))
       (on-no-children))))
 

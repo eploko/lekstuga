@@ -29,18 +29,26 @@
 (defn system-guardian
   [ctx _props]
   (logger/log! (api/self ctx) "Initialising...")
-
-  (fn [msg]
-    (match msg
-           :else 
-           (api/handle-message! ctx msg))))
+  (api/spawn! ctx "temp" temp-guardian nil)
+  (partial api/handle-message! ctx))
 
 (defn root-guardian
   [ctx _props]
   (logger/log! (api/self ctx) "Initialising...")
-  
-  (fn [msg]
-    (match msg
-           :else 
-           (api/handle-message! ctx msg))))
+  (let [user-guardian
+        (api/spawn! ctx "user" user-guardian nil)]
+    (api/spawn! ctx "system" system-guardian nil)
+    (api/link! user-guardian (api/self ctx))
+
+    ;; TODO: Implement cleanups
+    #_(api/on-cleanup ctx #(api/unlink! ctx user-guardian))
+    
+    (fn [msg]
+      (match msg
+             {::msg/subj :globe/terminated ::msg/from user-guardian}
+             (do
+               (logger/log! (api/self ctx) "The user guardian has terminated. Shutting down...")
+               (api/tell! (api/self ctx) (msg/make-signal :globe/poison-pill)))
+             :else 
+             (api/handle-message! ctx msg)))))
 
