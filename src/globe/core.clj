@@ -2,10 +2,8 @@
   (:require [globe.actor-system :as system]
             [globe.api :as api]
             [globe.ask :as ask]
-            [globe.logger :as logger]
             [globe.msg :as msg]))
 
-(def log! #'logger/log!)
 (def start-system! #'system/start!)
 (def spawn! #'api/spawn!)
 (def tell! #'api/tell!)

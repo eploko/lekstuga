@@ -2,19 +2,23 @@
   (:require
    [clojure.core.match :refer [match]]
    [globe.core :as globe]
+   [globe.logger :refer [debug info]]
    [globe.msg :as msg]
    [clojure.core.async :as async :refer [<! go]]
-   [clojure.string :as str]))
+   [clojure.string :as str]
+   [taoensso.timbre.tools.logging :refer [use-timbre]]))
+
+(use-timbre)
 
 (comment
   (defn my-hero
     [ctx _props]
-    (globe/log! (globe/self ctx) "Initialising...")
+    (debug (globe/self ctx) "Initialising...")
     (partial globe/handle-message! ctx))
 
   (defn greeter
     [ctx greeting]
-    (globe/log! (globe/self ctx) "Initialising...")
+    (debug (globe/self ctx) "Initialising...")
     (let [state (atom 0)]
       (globe/spawn! ctx "my-hero" my-hero nil nil)
 
@@ -28,7 +32,7 @@
                (throw (ex-info "Something went wrong!" {:reason :requested}))
                {::msg/subj :inc}
                (let [x (swap! state inc)]
-                 (globe/log! (globe/self ctx) "X:" x))
+                 (info (globe/self ctx) "X:" x))
                :else (globe/handle-message! ctx msg)))))
 
   (def system (globe/start-system!))

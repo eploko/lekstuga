@@ -21,26 +21,26 @@
 
 (defn- tell-children-to-stop
   [cell]
-  (logger/log! (api/self cell) "Telling all children to stop...")
+  (logger/debug (api/self cell) "Telling all children to stop...")
   (tell-children! cell (msg/make-signal :globe/poison-pill)
                   :on-no-children
                   #(api/tell! (api/self cell) (msg/make-signal ::children-stopped))))
 
 (defn- tell-children-to-restart
   [cell]
-  (logger/log! (api/self cell) "Telling all children to restart...")
+  (logger/debug (api/self cell) "Telling all children to restart...")
   (tell-children! cell (msg/make-signal :globe/restart)))
 
 (defn- handle-poison-pill
   [cell]
-  (logger/log! (api/self cell) "Received a poison pill!")
+  (logger/debug (api/self cell) "Received a poison pill!")
   (api/suspend! cell)
   (api/switch-to-mode! cell ::stopping)
   (tell-children-to-stop cell))
 
 (defn- handle-anomaly
   [cell _msg anomaly]
-  (logger/log! (api/self cell) "Handling anomaly:" anomaly)
+  (logger/error (api/self cell) "Handling anomaly:" anomaly)
   (api/suspend! cell)
   (api/switch-to-mode! cell ::awaiting-supervisor-decision)
   (api/tell! (api/supervisor cell)
@@ -53,7 +53,7 @@
         action (if (fn? on-failure)
                  (on-failure child-ref anomaly)
                  on-failure)]
-    (logger/log! (api/self cell) (format "Supervising decision for %s: %s" child-ref action))
+    (logger/info (api/self cell) (format "Supervising decision for %s: %s" child-ref action))
     (case action
       :globe/resume (api/tell! child-ref (-> (msg/make-signal :globe/resume)
                                              (msg/from (api/self cell))))
@@ -83,7 +83,7 @@
          {::msg/subj :globe/create}
          (api/become! cell (actor-fn ctx actor-props))
          :else 
-         (logger/log! (api/self ctx) "Message ignored:" (::msg/subj msg))))
+         (logger/warn (api/self ctx) "Message ignored:" (::msg/subj msg))))
 
 (defrecord Cell [system !self actor-fn actor-props supervisor
                  !children !behavior-fn !mode !life-cycle-hooks]
@@ -93,7 +93,7 @@
            {:ref child-ref :on-failure on-failure}))
   
   (remove-child! [_ child-ref]
-    (logger/log! @!self "Removing child:" (api/get-name child-ref))
+    (logger/debug @!self "Removing child:" (api/get-name child-ref))
     (swap! !children dissoc (api/get-name child-ref))
     (when-not (seq @!children)
       (api/tell! @!self (msg/make-signal ::children-stopped))))
@@ -158,7 +158,7 @@
            [::restarting {::msg/subj ::children-stopped}]
            (api/restart! this)
            :else 
-           (logger/log! @!self "Unhandled message [" @!mode "]:" (::msg/subj msg))))
+           (logger/warn @!self "Unhandled message [" @!mode "]:" (::msg/subj msg))))
 
   api/HasMode
   (switch-to-mode! [this mode]
@@ -166,7 +166,7 @@
 
   api/Terminatable
   (terminate! [this]
-    (logger/log! @!self "Terminating...")
+    (logger/debug @!self "Terminating...")
     (api/terminate! @!self))
 
   api/Suspendable

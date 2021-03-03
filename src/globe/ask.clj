@@ -9,7 +9,7 @@
 
 (defn ask-actor
   [ctx {:keys [target msg reply-ch]}]
-  (logger/log! (api/self ctx) "Initialising...")
+  (logger/debug (api/self ctx) "Initialising...")
   (api/tell! target (msg/from msg (api/self ctx)))
 
   (fn [msg]
@@ -35,7 +35,7 @@
        (let [[v p] (async/alts! [ch timeout-ch])]
          (if (= p timeout-ch)
            (do
-             (logger/log! actor-ref "<ask! timed out:" (::msg/subj msg))
+             (logger/error actor-ref "<ask! timed out:" (::msg/subj msg))
              (async/close! ch)
              (api/tell! ask-actor-ref (msg/make-msg :globe/poison-pill))
              :timeout)
