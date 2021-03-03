@@ -12,5 +12,6 @@
 (def msg #'msg/make-msg)
 (def self #'api/self)
 (def handle-message! #'api/handle-message!)
+(def on-cleanup #'api/on-cleanup)
 
 
