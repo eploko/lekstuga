@@ -83,7 +83,7 @@
          {::msg/subj :globe/create}
          (api/become! cell (actor-fn ctx actor-props))
          :else 
-         (logger/warn (api/self ctx) "Message ignored:" (::msg/subj msg))))
+         (logger/warn (api/self ctx) "Default behavior, message ignored:" (::msg/subj msg))))
 
 (defrecord Cell [system !self actor-fn actor-props supervisor
                  !children !behavior-fn !mode !life-cycle-hooks]
@@ -125,7 +125,7 @@
           (chan? result) (recur (<! result))
           (::anom/category result) (handle-anomaly this msg result)
           :else result))
-      (println "Message ignored:" (::msg/subj msg))))
+      (logger/warn "No behavior, message ignored:" (::msg/subj msg))))
 
   api/HasBehavior
   (become! [_ behavior-fn]
