@@ -6,9 +6,20 @@
    [globe.msg :as msg]
    [clojure.core.async :as async :refer [<! go]]
    [clojure.string :as str]
+   [taoensso.timbre :as timbre]
    [taoensso.timbre.tools.logging :refer [use-timbre]]))
 
 (use-timbre)
+
+(defn- repl-output
+  [{:keys [level vargs_]}]
+  (let [event (apply str (force vargs_))]
+    (str level " " event)))
+
+(timbre/merge-config! 
+  {:timestamp-opts 
+   {:pattern ""}
+   :output-fn repl-output})
 
 (comment
   (defn my-hero
