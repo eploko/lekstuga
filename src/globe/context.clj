@@ -17,7 +17,11 @@
 
   api/MessageHandler
   (handle-message! [_ msg]
-    (api/handle-unhandled-message! cell msg)))
+    (api/handle-unhandled-message! cell msg))
+
+  api/WithLifeCycleHooks
+  (on-cleanup [_ f]
+    (api/on-cleanup cell f)))
 
 (defn make-context
   [cell]

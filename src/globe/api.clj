@@ -84,3 +84,9 @@
 (defprotocol Linkable
   (link! [this link])
   (unlink! [this link]))
+
+(defprotocol WithLifeCycleHooks
+  (on-cleanup [this f]))
+
+(defprotocol LifeCycle
+  (cleanup! [this]))

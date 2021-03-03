@@ -31,7 +31,7 @@
   (tell-children-to-stop cell))
 
 (defrecord Cell [system !self actor-fn actor-props supervisor
-                 !children !behavior-fn !mode]
+                 !children !behavior-fn !mode !life-cycle-hooks]
   api/Children
   (add-child! [_ child-ref]
     (swap! !children assoc (api/get-name child-ref) child-ref))
@@ -95,7 +95,16 @@
     (api/suspend! @!self))
   
   (resume! [this]
-    (api/resume! @!self)))
+    (api/resume! @!self))
+
+  api/WithLifeCycleHooks
+  (on-cleanup [this f]
+    (swap! !life-cycle-hooks update :on-cleanup conj f))
+
+  api/LifeCycle
+  (cleanup! [_]
+    (doseq [f (:on-cleanup @!life-cycle-hooks)]
+      (f))))
 
 (defn- default-behavior
   [ctx cell actor-fn actor-props msg]
@@ -115,7 +124,8 @@
                :supervisor supervisor
                :!children (atom {})
                :!behavior-fn (atom nil)
-               :!mode (atom ::running)})
+               :!mode (atom ::running)
+               :!life-cycle-hooks (atom {:on-cleanup []})})
         ctx (context/make-context cell)
         behavior-fn (partial #'default-behavior ctx cell actor-fn actor-props)]
     

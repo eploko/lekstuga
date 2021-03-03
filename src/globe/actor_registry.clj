@@ -24,6 +24,7 @@
       (api/tell! user-guardian (msg/make-signal :globe/new-child))
       (let [child-ref (api/spawn! user-guardian-cell actor-id actor-fn actor-props)]
         (api/link! child-ref user-guardian)
+        (api/on-cleanup user-guardian-cell #(api/unlink! child-ref user-guardian))
         child-ref)))
 
   api/ActorRefResolver

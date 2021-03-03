@@ -40,8 +40,9 @@
     (api/spawn! ctx "system" system-guardian nil)
     (api/link! user-guardian (api/self ctx))
 
-    ;; TODO: Implement cleanups
-    #_(api/on-cleanup ctx #(api/unlink! ctx user-guardian))
+    (api/on-cleanup ctx (fn []
+                          (logger/log! (api/self ctx) "Cleaning up...")
+                          (api/unlink! user-guardian (api/self ctx))))
     
     (fn [msg]
       (match msg

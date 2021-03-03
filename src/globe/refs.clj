@@ -18,9 +18,6 @@
   (tell! [this msg]
     (api/put! mailbox msg))
 
-  api/QuestionTarget
-  (<ask! [this msg])
-
   api/ActorRefWithCell
   (underlying [_] cell)
   (register-death! [this]
@@ -45,6 +42,7 @@
   (terminate! [this]
     (api/stop-dispatching! dispatcher)
     (api/terminate! mailbox)
+    (api/cleanup! cell)
     (api/register-death! this))
 
   api/Linkable
