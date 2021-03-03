@@ -18,7 +18,8 @@
 (defprotocol ActorRegistry
   "Keeps track of main actors in the system and creates new refs."
   (root-guardian [this] "Returns a ref to the root guardian.")
-  (user-guardian [this] "Returns a ref to the user guardian."))
+  (user-guardian [this] "Returns a ref to the user guardian.")
+  (temp-guardian [this] "Returns a ref to the temp guardian."))
 
 (defprotocol ActorRefResolver
   (resolve-actor-ref [this str-or-uri] "Returns the actor ref."))
@@ -45,6 +46,9 @@
 
 (defprotocol HasSelf
   (self [this] "Returns the self ref."))
+
+(defprotocol HasSystem
+  (system [this] "Returns the underlying system."))
 
 (defprotocol ActorRefWithCell
   (underlying [this] "Returns the underlying actor cell.")

@@ -103,7 +103,7 @@
          {::msg/subj :globe/create}
          (api/become! cell (actor-fn ctx actor-props))
          :else 
-         (println "Message handled:" (::msg/subj msg))))
+         (logger/log! (api/self ctx) "Message ignored:" (::msg/subj msg))))
 
 (defn make-cell
   [system actor-fn actor-props supervisor]

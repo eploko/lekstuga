@@ -10,10 +10,16 @@
   api/Addressable
   (uri [_] uri)
   (get-name [_] (uris/child-name uri))
+
+  api/HasSystem
+  (system [this] system)
   
   api/MessageTarget
   (tell! [this msg]
     (api/put! mailbox msg))
+
+  api/QuestionTarget
+  (<ask! [this msg])
 
   api/ActorRefWithCell
   (underlying [_] cell)

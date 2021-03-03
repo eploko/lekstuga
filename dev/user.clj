@@ -3,12 +3,10 @@
    [clojure.core.match :refer [match]]
    [globe.api :as api]
    [globe.core :as globe]
-   [globe.msg :as msg]))
+   [globe.msg :as msg]
+   [clojure.core.async :as async :refer [<! go]]))
 
 (comment
-  (defn reply!
-    [ctx msg])
-  
   (defn my-hero
     [ctx _props]
     (globe/log! (globe/self ctx) "Initialising...")
@@ -25,7 +23,7 @@
                [{::msg/subj :greet ::msg/body who}]
                (println (format "%s %s!" greeting who))
                [{::msg/subj :wassup?}]
-               (reply! msg "WASSUP!!!")
+               (globe/reply! msg "WASSUP!!!")
                [{::msg/subj :throw}]
                (throw (ex-info "Something went wrong!" {:reason :requested}))
                [{::msg/subj :inc}]
@@ -43,7 +41,7 @@
   (globe/tell! main-actor (globe/msg :greet "Andrey"))
   (globe/tell! main-actor (globe/msg :inc))
   (go (println "reply:"
-               (<! (<ask! main-actor {:subj :wassup?}))))
+               (<! (globe/<ask! main-actor (globe/msg :wassup?)))))
   (globe/tell! main-actor (globe/msg :globe/poison-pill))
   (globe/tell! main-actor (globe/msg :throw))
 

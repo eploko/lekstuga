@@ -13,6 +13,9 @@
   (user-guardian [this]
     (-> (api/root-guardian this)
         (api/resolve-actor-ref (uris/child-uri root-path "user"))))
+  (temp-guardian [this]
+    (-> (api/root-guardian this)
+        (api/resolve-actor-ref (uris/child-uri root-path "system/temp"))))
   
   api/Spawner
   (spawn! [this actor-id actor-fn actor-props]
