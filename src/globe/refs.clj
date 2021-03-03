@@ -2,12 +2,14 @@
   (:require
    [globe.api :as api]
    [globe.msg :as msg]
-   [globe.cell :as cell]))
+   [globe.cell :as cell]
+   [globe.uris :as uris]))
 
 (defrecord LocalActorRef [system uri actor-fn actor-props supervisor cell
                           mailbox dispatcher !links !dead?]
   api/Addressable
   (uri [_] uri)
+  (get-name [_] (uris/child-name uri))
   
   api/MessageTarget
   (tell! [this msg]
@@ -54,7 +56,18 @@
     (str "<#LocalActorRef \"" uri "\" "
          "fn: " actor-fn ", "
          "props: " actor-props
-         ">")))
+         ">"))
+
+  api/ActorRefResolver
+  (resolve-actor-ref [this str-or-uri]
+    (if (uris/same? str-or-uri uri)
+      this
+      (if (uris/child? str-or-uri uri)
+        (let [cell (api/underlying this)
+              child-name (uris/child-name uri str-or-uri)]
+          (when-let [child-ref (api/get-child-ref cell child-name)]
+            (api/resolve-actor-ref child-ref str-or-uri)))
+        nil))))
 
 (defmethod print-method LocalActorRef
   [o w]

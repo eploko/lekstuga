@@ -34,13 +34,16 @@
                  !children !behavior-fn !mode]
   api/Children
   (add-child! [_ child-ref]
-    (swap! !children conj child-ref))
+    (swap! !children assoc (api/get-name child-ref) child-ref))
   
   (remove-child! [_ child-ref]
-    (logger/log! @!self "removing child:" (api/uri child-ref))
-    (swap! !children disj child-ref)
+    (logger/log! @!self "removing child:" (api/get-name child-ref))
+    (swap! !children dissoc (api/get-name child-ref))
     (when-not (seq @!children)
       (api/tell! @!self (msg/make-signal ::children-stopped))))
+
+  (get-child-ref [_ child-name]
+    (get @!children child-name))
 
   api/Spawner
   (spawn! [this actor-id actor-fn actor-props]
@@ -110,7 +113,7 @@
                :actor-fn actor-fn
                :actor-props actor-props
                :supervisor supervisor
-               :!children (atom #{})
+               :!children (atom {})
                :!behavior-fn (atom nil)
                :!mode (atom ::running)})
         ctx (context/make-context cell)

@@ -1,6 +1,7 @@
 (ns user
   (:require
    [clojure.core.match :refer [match]]
+   [globe.api :as api]
    [globe.core :as globe]
    [globe.msg :as msg]))
 
@@ -33,6 +34,9 @@
                :else (globe/handle-message! ctx msg)))))
 
   (def system (globe/start-system!))
+  (def registry (api/registry system))
+  (api/resolve-actor-ref registry "globe://default@localhost/user")
+  
   (def main-actor (globe/spawn! system "greeter" greeter "Hello"))
   (type main-actor)
 

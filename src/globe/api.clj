@@ -1,5 +1,8 @@
 (ns globe.api)
 
+(defprotocol ActorSystem
+  (registry [this] "Returns an `ActorRegistry`"))
+
 (defprotocol MailboxFactory
   (make-mailbox [this] "Makes a new mailbox."))
 
@@ -16,6 +19,9 @@
   "Keeps track of main actors in the system and creates new refs."
   (root-guardian [this] "Returns a ref to the root guardian."))
 
+(defprotocol ActorRefResolver
+  (resolve-actor-ref [this str-or-uri] "Returns the actor ref."))
+
 (defprotocol Startable
   (start! [this] "Start this cell, i.e. attach it to the dispatcher."))
 
@@ -24,7 +30,8 @@
 
 (defprotocol Children
   (add-child! [this child-ref])
-  (remove-child! [this child-ref]))
+  (remove-child! [this child-ref])
+  (get-child-ref [this child-name]))
 
 (defprotocol MessageTarget
   "An entity able to receive messages."
@@ -32,7 +39,8 @@
     "Accepts the message `msg` for processing."))
 
 (defprotocol Addressable
-  (uri [this] "Returns the URI."))
+  (uri [this] "Returns the URI.")
+  (get-name [this] "Returns the last segment of the underlying URI."))
 
 (defprotocol HasSelf
   (self [this] "Returns the self ref."))

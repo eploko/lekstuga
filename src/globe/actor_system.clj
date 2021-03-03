@@ -7,6 +7,9 @@
             [globe.refs :as refs]))
 
 (defrecord ActorSystem [actor-registry]
+  api/ActorSystem
+  (registry [this] actor-registry)
+  
   api/Spawner
   (spawn! [_ actor-id actor-fn actor-props]
     (api/spawn! actor-registry actor-id actor-fn actor-props))

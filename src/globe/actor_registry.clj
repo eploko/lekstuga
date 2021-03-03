@@ -17,7 +17,14 @@
       (api/tell! user-guardian (msg/make-signal :globe/new-child))
       (let [child-ref (api/spawn! user-guardian-cell actor-id actor-fn actor-props)]
         (api/link! child-ref user-guardian)
-        child-ref))))
+        child-ref)))
+
+  api/ActorRefResolver
+  (resolve-actor-ref [this str-or-uri]
+    (if (uris/child? str-or-uri root-path)
+      (-> (api/root-guardian this)
+          (api/resolve-actor-ref str-or-uri))
+      nil)))
 
 (defn local-actor-registry
   [system-id]
