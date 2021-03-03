@@ -94,6 +94,6 @@
   (on-cleanup [this f]))
 
 (defprotocol LifeCycle
-  (cleanup! [this])
-  (restart! [this])
-  (init! [this]))
+  (cleanup-actor! [this])
+  (restart-actor! [this])
+  (init-actor! [this]))

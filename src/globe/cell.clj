@@ -119,16 +119,20 @@
 
   api/MessageHandler
   (handle-message! [this msg]
+    (logger/debug @!self "Got message:" msg)
     (if-let [behavior-fn @!behavior-fn]
-      (async/go-loop [result (err-or (behavior-fn msg))]
-        (cond
-          (chan? result) (recur (<! result))
-          (::anom/category result) (handle-anomaly this msg result)
-          :else result))
-      (logger/warn "No behavior, message ignored:" (::msg/subj msg))))
+      (do
+        (logger/debug @!self "Using behavior:" behavior-fn)
+        (async/go-loop [result (err-or (behavior-fn msg))]
+          (cond
+            (chan? result) (recur (<! result))
+            (::anom/category result) (handle-anomaly this msg result)
+            :else result)))
+      (logger/warn @!self "No behavior, message ignored:" (::msg/subj msg))))
 
   api/HasBehavior
-  (become! [_ behavior-fn]
+  (become! [this behavior-fn]
+    (logger/debug @!self "New behavior:" behavior-fn)
     (reset! !behavior-fn behavior-fn))
 
   api/PartOfTree
@@ -156,7 +160,7 @@
            [::stopping {::msg/subj ::children-stopped}]
            (api/terminate! this)
            [::restarting {::msg/subj ::children-stopped}]
-           (api/restart! this)
+           (api/restart-actor! this)
            :else 
            (logger/warn @!self "Unhandled message [" @!mode "]:" (::msg/subj msg))))
 
@@ -181,17 +185,19 @@
     (swap! !life-cycle-hooks update :on-cleanup conj f))
 
   api/LifeCycle
-  (cleanup! [this]
+  (cleanup-actor! [this]
     (doseq [f (:on-cleanup @!life-cycle-hooks)]
       (f))
     (swap! !life-cycle-hooks assoc :on-cleanup [])
     this)
-  (restart! [this]
-    (api/cleanup! this)
-    (api/init! this)
+  
+  (restart-actor! [this]
+    (api/cleanup-actor! this)
+    (api/init-actor! this)
     (api/tell! @!self (msg/make-signal :globe/create))
     (api/resume! this))
-  (init! [this]
+  
+  (init-actor! [this]
     (let [ctx (context/make-context this)
           behavior-fn (partial #'default-behavior ctx this actor-fn actor-props)]
       (api/become! this behavior-fn)
@@ -200,19 +206,19 @@
 
 (defn make-cell
   [system actor-fn actor-props supervisor]
-  (let [cell (map->Cell
-              {:system system
-               :!self (atom nil)
-               :actor-fn actor-fn
-               :actor-props actor-props
-               :supervisor supervisor
-               :!children (atom {})
-               :!behavior-fn (atom nil)
-               :!mode (atom ::running)
-               :!life-cycle-hooks (atom {:on-cleanup []})})]
-    (api/init! cell)))
+  (map->Cell
+   {:system system
+    :!self (atom nil)
+    :actor-fn actor-fn
+    :actor-props actor-props
+    :supervisor supervisor
+    :!children (atom {})
+    :!behavior-fn (atom nil)
+    :!mode (atom ::running)
+    :!life-cycle-hooks (atom {:on-cleanup []})}))
 
 (defn init!
   [cell self]
-  (reset! (:!self cell) self))
+  (reset! (:!self cell) self)
+  (api/init-actor! cell))
 

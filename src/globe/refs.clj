@@ -42,7 +42,7 @@
   (terminate! [this]
     (api/stop-dispatching! dispatcher)
     (api/terminate! mailbox)
-    (api/cleanup! cell)
+    (api/cleanup-actor! cell)
     (api/register-death! this))
 
   api/Linkable
