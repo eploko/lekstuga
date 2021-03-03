@@ -9,17 +9,26 @@
    [taoensso.timbre :as timbre]
    [taoensso.timbre.tools.logging :refer [use-timbre]]))
 
-(use-timbre)
+(defn configure-timbre!
+  []
+  (use-timbre)
+  (let [level->str
+        {:trace "T"
+         :debug "D"
+         :info  "I"
+         :warn  "W"
+         :error "E"
+         :fatal "F"
+         :report "R"}]
+    (timbre/merge-config! 
+     {:timestamp-opts 
+      {:pattern ""}
+      :output-fn
+      (fn [{:keys [level vargs_]}]
+        (let [event (apply str (force vargs_))]
+          (str (get level->str level level) " " event)))})))
 
-(defn- repl-output
-  [{:keys [level vargs_]}]
-  (let [event (apply str (force vargs_))]
-    (str level " " event)))
-
-(timbre/merge-config! 
-  {:timestamp-opts 
-   {:pattern ""}
-   :output-fn repl-output})
+(configure-timbre!)
 
 (comment
   (defn my-hero
