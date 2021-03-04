@@ -1,16 +1,21 @@
 (ns globe.actor-system
   (:require
    [clojure.string :as str]
-   [globe.async :refer [go-safe]]
+   [cognitect.anomalies :as anom]
+   [globe.async :refer [<? go-safe]]
    [globe.actor-registry :as registry]
    [globe.api :as api]
+   [globe.api.transport :as transport-api]
    [globe.dispatcher :as dispatcher]
    [globe.mailbox :as mb]
    [globe.refs :as refs]
-   [globe.transport :as transport-api]
-   [globe.transports.local :as local-transport]))
+   [globe.transports.local :as local-transport]
+   [globe.uris :as uris]))
 
-(defrecord ActorSystem [actor-registry !transports]
+(defrecord ActorSystem [system-name actor-registry !transports]
+  api/HasName
+  (get-name [this] system-name)
+  
   api/ActorSystem
   (registry [this] actor-registry)
   
@@ -37,35 +42,49 @@
   api/RefResolver
   (<resolve-ref! [_ str-or-uri]
     (go-safe
-     ))
+     (let [scheme (-> str-or-uri uris/scheme)]
+       (if-let [transport (@!transports scheme)]
+         (<? (api/<resolve-ref! transport str-or-uri))
+         {::anom/category ::anom/not-found
+          ::anom/message (str "No transport registered for scheme: " scheme)
+          :data str-or-uri}))))
 
   api/Transports
   (register-transport! [_ transport]
     (swap! !transports assoc
-           (transport-api/get-protocol-name transport)
-           transport))
+           (transport-api/scheme transport)
+           transport)
+    (api/start! transport))
   (get-transport [_ protocol-name]
-    (get @!transports protocol-name)))
+    (get @!transports protocol-name))
+
+  api/Startable
+  (start! [this]
+    (registry/init! actor-registry this)
+    (api/register-transport!
+     this (local-transport/local-transport "globe" this))
+    this)
+  (stop! [this]
+    (doseq [transport (vals @!transports)]
+      (api/stop! transport))))
 
 (defmethod print-method ActorSystem
   [o w]
   (print-simple (.toString o) w))
 
-(defn- init-transports!
-  [system]
-  (api/register-transport!
-   system local-transport/shared-instance))
-
 (defn start!
   ([]
    (start! "default"))
-  ([system-id]
-   (let [ar (registry/local-actor-registry system-id)
-         system (map->ActorSystem {:actor-registry ar
-                                   :!transports (atom {})})]
-     (init-transports! system)
-     (registry/init! ar system)
-     system)))
+  ([system-name]
+   (api/start!
+    (map->ActorSystem
+     {:system-name system-name
+      :actor-registry (registry/local-actor-registry system-name)
+      :!transports (atom {})}))))
+
+(defn stop!
+  [system]
+  (api/stop! system))
 
 (comment
   (start!)

@@ -148,7 +148,7 @@
             {::msg/subj :globe/restart ::msg/from supervisor}]
            (handle-supervised-restart this)
            [::stopping {::msg/subj ::children-stopped}]
-           (api/terminate! this)
+           (api/stop! this)
            [::restarting {::msg/subj ::children-stopped}]
            (api/restart-actor! this)
            :else 
@@ -159,10 +159,12 @@
     (logger/debug @!self "Switched to mode:" mode)
     (reset! !mode mode))
 
-  api/Terminatable
-  (terminate! [this]
+  api/Startable
+  (start! [this]
+    (api/init-actor! this))
+  (stop! [this]
     (logger/debug @!self "Terminating...")
-    (api/terminate! @!self))
+    (api/stop! @!self))
 
   api/Suspendable
   (suspend! [this]
@@ -213,6 +215,6 @@
 (defn init!
   [cell self]
   (reset! (:!self cell) self)
-  (api/init-actor! cell)
+  (api/start! cell)
   cell)
 

@@ -1,7 +1,9 @@
 (ns globe.uris
   (:require
-   [lambdaisland.uri :as luri :refer [uri]]
+   [lambdaisland.uri :as luri]
    [clojure.string :as str]))
+
+(def uri luri/uri)
 
 (def prefix-uri (uri "globe://"))
 
@@ -48,7 +50,17 @@
   [a b]
   (= (str a) (str b)))
 
+(defn scheme
+  [str-or-uri]
+  (:scheme (uri str-or-uri)))
+
+(defn host
+  [str-or-uri]
+  (:host (uri str-or-uri)))
+
 (comment
+  (scheme "globe://")
+  (into {} (uri "globe://"))
   (address "glo")
   (system-uri "aloha")
   (child? (luri/join (system-uri "aloha") "/" "user")

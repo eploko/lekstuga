@@ -5,6 +5,7 @@
             [globe.msg :as msg]))
 
 (def start-system! #'system/start!)
+(def stop-system! #'system/stop!)
 (def spawn! #'api/spawn!)
 (def tell! #'api/tell!)
 (def <ask! #'ask/<ask!)

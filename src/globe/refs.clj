@@ -9,6 +9,8 @@
                           mailbox dispatcher !links !dead?]
   api/Addressable
   (uri [_] uri)
+
+  api/HasName
   (get-name [_] (uris/child-name uri))
 
   api/HasSystem
@@ -31,19 +33,17 @@
   api/Startable
   (start! [this]
     (api/start-dispatching! dispatcher mailbox cell))
+  (stop! [this]
+    (api/stop-dispatching! dispatcher)
+    (api/stop! mailbox)
+    (api/cleanup-actor! cell)
+    (api/register-death! this))
 
   api/Suspendable
   (suspend! [this]
     (api/suspend! mailbox))
   (resume! [this]
     (api/resume! mailbox))
-
-  api/Terminatable
-  (terminate! [this]
-    (api/stop-dispatching! dispatcher)
-    (api/terminate! mailbox)
-    (api/cleanup-actor! cell)
-    (api/register-death! this))
 
   api/Linkable
   (link! [this link]

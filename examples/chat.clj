@@ -1,6 +1,7 @@
 (ns examples.chat
   (:require
    [clojure.core.match :refer [match]]
+   [cognitect.anomalies :as anom]
    [globe.async :refer [go-safe <?]]
    [globe.core :as globe]
    [globe.logger :refer [debug info error]]
@@ -50,12 +51,15 @@
                 {::msg/subj ::connect}
                 (go-safe
                  (info (api/self ctx) "Resolving ref for:" server-uri)
-                 (if-let [server-ref (<? (globe/<resolve-ref! ctx server-uri))]
-                   (globe/tell! server-ref (-> (globe/msg ::connect)
-                                               (globe/from (globe/self ctx))))
-                   (error (api/self ctx) "Server unavailable:" server-uri)))
+                 (let [server-ref (<? (globe/<resolve-ref! ctx server-uri))]
+                   (if (::anom/category server-ref)
+                     (do
+                       (info (api/self ctx) "Got anomaly:" server-ref)
+                       (error (api/self ctx) "Server unavailable:" server-uri))
+                     (globe/tell! server-ref (-> (globe/msg ::connect)
+                                                 (globe/from (globe/self ctx)))))))
                 {::msg/subj ::connected}
-                (globe/become! connected-behavior)
+                (globe/become! ctx connected-behavior)
                 :else 
                 (globe/handle-message! ctx msg)))]
     
@@ -63,7 +67,7 @@
 
 (def client-sys (globe/start-system! "client-sys"))
 (def bob (globe/spawn! client-sys "bob" client-actor
-                       {:server-uri "globe.spc://server-sys/user/chat-server"
+                       {:server-uri "globe://server-sys/user/chat-server"
                         :nick "Bob"}
                        nil))
 
@@ -71,4 +75,5 @@
 
 (comment
   (globe/tell! bob (globe/msg :globe/poison-pill))
+  (globe/stop-system! client-sys)
   ,)

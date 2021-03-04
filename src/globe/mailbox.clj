@@ -20,8 +20,9 @@
   (resume! [_]
     (reset! !suspended? false))
 
-  api/Terminatable
-  (terminate! [this]
+  api/Startable
+  (start! [_])
+  (stop! [this]
     (async/close! signals)
     (async/close! messages))
 

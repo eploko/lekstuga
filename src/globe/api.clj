@@ -29,10 +29,8 @@
   (resolve-child-ref [this str-or-uri] "Returns the actor ref."))
 
 (defprotocol Startable
-  (start! [this] "Start this cell, i.e. attach it to the dispatcher."))
-
-(defprotocol Terminatable
-  (terminate! [this] "Terminates the process."))
+  (start! [this] "Starts the entity.")
+  (stop! [this] "Stops the entity."))
 
 (defprotocol Children
   (add-child! [this child-ref on-failure])
@@ -53,7 +51,9 @@
     "Accepts the message `msg` for processing."))
 
 (defprotocol Addressable
-  (uri [this] "Returns the URI.")
+  (uri [this] "Returns the URI."))
+
+(defprotocol HasName
   (get-name [this] "Returns the last segment of the underlying URI."))
 
 (defprotocol PartOfTree

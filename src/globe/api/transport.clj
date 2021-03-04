@@ -1,4 +1,4 @@
 (ns globe.api.transport)
 
 (defprotocol Transport
-  (get-protocol-name [this] "Returns the protocol name"))
+  (scheme [this] "Returns the transport scheme"))
