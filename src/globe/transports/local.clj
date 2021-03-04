@@ -6,7 +6,10 @@
   transport-api/Transport
   (get-protocol-name [_] protocol-name))
 
-(defn local-transport
+(defn- local-transport
   [protocol-name]
   (map->LocalTransport
    {:protocol-name protocol-name}))
+
+(def shared-instance
+  (local-transport "globe"))

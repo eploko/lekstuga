@@ -54,7 +54,7 @@
 (defn- init-transports!
   [system]
   (api/register-transport!
-   system (local-transport/local-transport "globe")))
+   system local-transport/shared-instance))
 
 (defn start!
   ([]
