@@ -1,12 +1,12 @@
 (ns globe.actor-system
-  (:require [clojure.string :as str]
-            [globe.async :refer [go-safe]]
-            [globe.actor-registry :as registry]
-            [globe.api :as api]
-            [globe.dispatcher :as dispatcher]
-            [globe.mailbox :as mb]
-            [globe.refs :as refs]
-            [clojure.core.async :as async]))
+  (:require
+   [clojure.string :as str]
+   [globe.async :refer [go-safe]]
+   [globe.actor-registry :as registry]
+   [globe.api :as api]
+   [globe.dispatcher :as dispatcher]
+   [globe.mailbox :as mb]
+   [globe.refs :as refs]))
 
 (defrecord ActorSystem [actor-registry]
   api/ActorSystem
