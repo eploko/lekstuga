@@ -12,10 +12,10 @@
     (:root-guardian @!init-data))
   (user-guardian [this]
     (-> (api/root-guardian this)
-        (api/resolve-actor-ref (uris/child-uri root-path "user"))))
+        (api/resolve-child-ref (uris/child-uri root-path "user"))))
   (temp-guardian [this]
     (-> (api/root-guardian this)
-        (api/resolve-actor-ref (uris/child-uri root-path "system/temp"))))
+        (api/resolve-child-ref (uris/child-uri root-path "system/temp"))))
   
   api/Spawner
   (spawn! [this actor-id actor-fn actor-props opts]
@@ -27,11 +27,11 @@
         (api/on-cleanup user-guardian-cell #(api/unlink! child-ref user-guardian))
         child-ref)))
 
-  api/ActorRefResolver
-  (resolve-actor-ref [this str-or-uri]
+  api/ChildRefResolver
+  (resolve-child-ref [this str-or-uri]
     (if (uris/child? str-or-uri root-path)
       (-> (api/root-guardian this)
-          (api/resolve-actor-ref str-or-uri))
+          (api/resolve-child-ref str-or-uri))
       nil)))
 
 (defn local-actor-registry

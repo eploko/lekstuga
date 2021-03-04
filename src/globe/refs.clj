@@ -62,15 +62,15 @@
          "props: " actor-props
          ">"))
 
-  api/ActorRefResolver
-  (resolve-actor-ref [this str-or-uri]
+  api/ChildRefResolver
+  (resolve-child-ref [this str-or-uri]
     (if (uris/same? str-or-uri uri)
       this
       (if (uris/child? str-or-uri uri)
         (let [cell (api/underlying this)
               child-name (uris/child-name uri str-or-uri)]
           (when-let [child-ref (api/get-child-ref cell child-name)]
-            (api/resolve-actor-ref child-ref str-or-uri)))
+            (api/resolve-child-ref child-ref str-or-uri)))
         nil))))
 
 (defmethod print-method LocalActorRef

@@ -1,10 +1,12 @@
 (ns globe.actor-system
   (:require [clojure.string :as str]
+            [globe.async :refer [go-safe]]
             [globe.actor-registry :as registry]
             [globe.api :as api]
             [globe.dispatcher :as dispatcher]
             [globe.mailbox :as mb]
-            [globe.refs :as refs]))
+            [globe.refs :as refs]
+            [clojure.core.async :as async]))
 
 (defrecord ActorSystem [actor-registry]
   api/ActorSystem
@@ -28,7 +30,11 @@
 
   clojure.lang.IFn
   (toString [_]
-    (str "<#ActorSystem \"" (api/uri (api/root-guardian actor-registry)) "\">")))
+    (str "<#ActorSystem \"" (api/uri (api/root-guardian actor-registry)) "\">"))
+
+  api/RefResolver
+  (<resolve-ref! [_ str-or-uri]
+    (go-safe)))
 
 (defmethod print-method ActorSystem
   [o w]

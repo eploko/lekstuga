@@ -1,10 +1,10 @@
 (ns globe.cell
   (:require
-   [clojure.core.async :as async :refer [<!]]
+   [clojure.core.async :as async]
    [clojure.core.match :refer [match]]
    [cognitect.anomalies :as anom]
    [globe.api :as api]
-   [globe.async :as gasync :refer [chan? err-or]]
+   [globe.async :as gasync :refer [chan? err-or <?]]
    [globe.context :as context]
    [globe.logger :as logger]
    [globe.msg :as msg]
@@ -115,7 +115,7 @@
     (if-let [behavior-fn @!behavior-fn]
       (async/go-loop [result (err-or (behavior-fn msg))]
         (cond
-          (chan? result) (recur (<! result))
+          (chan? result) (recur (<? result))
           (::anom/category result) (handle-anomaly this msg result)
           :else result))
       (logger/warn @!self "No behavior, message ignored:" (::msg/subj msg))))
@@ -191,7 +191,11 @@
       (api/become! this (actor-fn ctx actor-props))
       (api/switch-to-mode! this ::running)
       (api/resume! this))
-    this))
+    this)
+
+  api/RefResolver
+  (<resolve-ref! [_ str-or-uri]
+    (api/<resolve-ref! system str-or-uri)))
 
 (defn make-cell
   [system actor-fn actor-props supervisor]

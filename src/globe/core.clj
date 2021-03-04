@@ -10,8 +10,12 @@
 (def <ask! #'ask/<ask!)
 (def reply! #'ask/reply!)
 (def msg #'msg/make-msg)
+(def from #'msg/from)
 (def self #'api/self)
 (def handle-message! #'api/handle-message!)
 (def on-cleanup #'api/on-cleanup)
-
+(def link! #'api/link!)
+(def unlink! #'api/unlink!)
+(def become! #'api/become!)
+(def <resolve-ref! #'api/<resolve-ref!)
 

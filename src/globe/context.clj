@@ -21,7 +21,11 @@
 
   api/WithLifeCycleHooks
   (on-cleanup [_ f]
-    (api/on-cleanup cell f)))
+    (api/on-cleanup cell f))
+
+  api/RefResolver
+  (<resolve-ref! [_ str-or-uri]
+    (api/<resolve-ref! cell str-or-uri)))
 
 (defn make-context
   [cell]

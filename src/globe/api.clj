@@ -21,8 +21,12 @@
   (user-guardian [this] "Returns a ref to the user guardian.")
   (temp-guardian [this] "Returns a ref to the temp guardian."))
 
-(defprotocol ActorRefResolver
-  (resolve-actor-ref [this str-or-uri] "Returns the actor ref."))
+(defprotocol RefResolver
+  (<resolve-ref! [this str-or-uri]
+    "Performs local or remote ref resolution. Sends ref or nil."))
+
+(defprotocol ChildRefResolver
+  (resolve-child-ref [this str-or-uri] "Returns the actor ref."))
 
 (defprotocol Startable
   (start! [this] "Start this cell, i.e. attach it to the dispatcher."))
