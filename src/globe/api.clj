@@ -39,6 +39,10 @@
   (remove-child! [this child-ref])
   (get-child-ref [this child-name]))
 
+(defprotocol Transports
+  (register-transport! [this transport])
+  (get-transport [this protocol-name]))
+
 (defprotocol Supervisor
   (supervising-strategy [this child-ref]
     "Returns the supervising strategy for the child ref."))

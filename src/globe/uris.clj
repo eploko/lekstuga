@@ -8,8 +8,7 @@
 (defn system-uri
   [system-id]
   (str (assoc prefix-uri
-              :user system-id
-              :host "localhost")))
+              :host system-id)))
 
 (defn child-uri
   [parent child-name]

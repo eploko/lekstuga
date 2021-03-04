@@ -63,7 +63,7 @@
 
 (def client-sys (globe/start-system! "client-sys"))
 (def bob (globe/spawn! client-sys "bob" client-actor
-                       {:server-uri "globe://server-sys@localhost/user/chat-server"
+                       {:server-uri "globe.spc://server-sys/user/chat-server"
                         :nick "Bob"}
                        nil))
 
