@@ -1,4 +1,4 @@
-(ns examples.chat.server
+(ns chat.server
   (:require
    [clojure.core.match :refer [match]]
    [globe.core :as globe]
@@ -20,29 +20,29 @@
 
     (fn [msg]
       (match msg
-             {::msg/subj ::connect ::msg/from client ::msg/body nick}
+             {::msg/subj :chat/connect ::msg/from client ::msg/body nick}
              (do
                (swap! !clients assoc client nick)
                (globe/link! client (globe/self ctx))
-               (globe/tell! client (-> (globe/msg ::connected)
+               (globe/tell! client (-> (globe/msg :chat/connected)
                                        (globe/from (globe/self ctx))))
                (tell-all! (remove #{client} (keys @!clients))
-                          (globe/msg ::user-connected nick)))
+                          (globe/msg :chat/user-connected nick)))
              {::msg/subj :globe/terminated ::msg/from client}
              (let [nick (@!clients client)]
                (swap! !clients dissoc client)
                (tell-all! (keys @!clients)
-                          (globe/msg ::user-left nick)))
-             {::msg/subj ::say ::msg/from client ::msg/body s}
+                          (globe/msg :chat/user-left nick)))
+             {::msg/subj :chat/say ::msg/from client ::msg/body s}
              (tell-all! (keys @!clients)
-                        (globe/msg ::user-says
+                        (globe/msg :chat/user-says
                                    {:nick (@!clients client)
                                     :text s}))
-             {::msg/subj ::nick ::msg/from client ::msg/body new-nick}
+             {::msg/subj :chat/nick ::msg/from client ::msg/body new-nick}
              (let [old-nick (@!clients client)]
                (swap! !clients assoc client new-nick)
                (tell-all! (remove #{client} (keys @!clients))
-                          (globe/msg ::nick-changed {:old old-nick :new  new-nick})))
+                          (globe/msg :chat/nick-changed {:old old-nick :new  new-nick})))
              :else 
              (globe/handle-message! ctx msg)))))
 
