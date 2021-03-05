@@ -6,7 +6,7 @@ A poor man's actor library for Clojure and ClojureScript.
 
 Run a REPL and connect to it in Emacs (`M-x cider-connect-clj` or `C-c M-c`):
 
-    $ clojure -M:env/test:env/dev:repl
+    $ clojure -M:env/test:env/dev:repl/cider
 
 Invoke a library API function from the command-line:
 
