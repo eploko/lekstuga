@@ -1,4 +1,4 @@
-(ns chat.server
+(ns examples.chat.server
   (:require
    [clojure.core.match :refer [match]]
    [globe.core :as globe]

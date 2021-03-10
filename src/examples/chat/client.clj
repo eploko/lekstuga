@@ -1,4 +1,4 @@
-(ns chat.client
+(ns examples.chat.client
   (:require
    [clojure.core.match :refer [match]]
    [cognitect.anomalies :as anom]
@@ -29,7 +29,7 @@
 
        (connected-behavior
          [server-ref nick msg]
-         (match msg
+         (match msgoeu
                 {::msg/subj :globe/terminated ::msg/from server-ref}
                 (do
                   (display nick "Server is down. Please connect again.")

@@ -1,8 +1,8 @@
-(ns chat.local
+(ns examples.chat.local
   (:require
    [globe.core :as globe]
-   [chat.server :as chat-server]
-   [chat.client :as chat-client]
+   [examples.chat.server :as chat-server]
+   [examples.chat.client :as chat-client]
    [clojure.string :as str]
    [taoensso.timbre :as timbre]
    [taoensso.timbre.tools.logging :refer [use-timbre]]))

@@ -1,8 +1,9 @@
 (ns globe.core
-  (:require [globe.actor-system :as system]
-            [globe.api :as api]
-            [globe.ask :as ask]
-            [globe.msg :as msg]))
+  (:require
+   [globe.actor-system :as system]
+   [globe.api :as api]
+   [globe.ask :as ask]
+   [globe.msg :as msg]))
 
 (def start-system! system/start!)
 (def stop-system! system/stop!)
