@@ -1,6 +1,6 @@
-(ns globe.context
+(ns lekstuga.context
   (:require
-   [globe.api :as api]))
+   [lekstuga.api :as api]))
 
 (defrecord Context [cell]
   api/Spawner

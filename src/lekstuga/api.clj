@@ -1,4 +1,4 @@
-(ns globe.api)
+(ns lekstuga.api)
 
 (defprotocol ActorSystem
   (registry [this] "Returns an `ActorRegistry`"))

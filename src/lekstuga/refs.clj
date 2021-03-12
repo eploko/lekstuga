@@ -1,9 +1,9 @@
-(ns globe.refs
+(ns lekstuga.refs
   (:require
-   [globe.api :as api]
-   [globe.msg :as msg]
-   [globe.cell :as cell]
-   [globe.uris :as uris]))
+   [lekstuga.api :as api]
+   [lekstuga.msg :as msg]
+   [lekstuga.cell :as cell]
+   [lekstuga.uris :as uris]))
 
 (defrecord LocalActorRef [system uri actor-fn actor-props supervisor cell
                           mailbox dispatcher !links !dead?]
@@ -24,10 +24,10 @@
   (underlying [_] cell)
   (register-death! [this]
     (reset! !dead? true)
-    (api/tell! supervisor (-> (msg/make-signal :globe/child-terminated)
+    (api/tell! supervisor (-> (msg/make-signal :lekstuga/child-terminated)
                               (msg/from this)))
     (doseq [link (first (swap-vals! !links #{}))]
-      (api/tell! link (-> (msg/make-msg :globe/terminated)
+      (api/tell! link (-> (msg/make-msg :lekstuga/terminated)
                           (msg/from this)))))
 
   api/Startable
@@ -48,7 +48,7 @@
   api/Linkable
   (link! [this link]
     (if @!dead?
-      (api/tell! link (-> (msg/make-msg :globe/terminated)
+      (api/tell! link (-> (msg/make-msg :lekstuga/terminated)
                           (msg/from this)))
       (swap! !links conj link)))
   

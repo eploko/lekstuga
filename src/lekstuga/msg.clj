@@ -1,4 +1,4 @@
-(ns globe.msg)
+(ns lekstuga.msg)
 
 (defn make-msg
   ([subj]

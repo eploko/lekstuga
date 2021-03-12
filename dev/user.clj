@@ -1,9 +1,9 @@
 (ns user
   (:require
    [clojure.core.match :refer [match]]
-   [globe.core :as globe]
-   [globe.logger :refer [debug info]]
-   [globe.msg :as msg]
+   [lekstuga.core :as lekstuga]
+   [lekstuga.logger :refer [debug info]]
+   [lekstuga.msg :as msg]
    [clojure.core.async :as async :refer [<! go]]
    [clojure.string :as str]
    [taoensso.timbre :as timbre]
@@ -33,37 +33,37 @@
 (comment
   (defn my-hero
     [ctx _props]
-    (debug (globe/self ctx) "Initialising...")
-    (partial globe/handle-message! ctx))
+    (debug (lekstuga/self ctx) "Initialising...")
+    (partial lekstuga/handle-message! ctx))
 
   (defn greeter
     [ctx greeting]
-    (debug (globe/self ctx) "Initialising...")
+    (debug (lekstuga/self ctx) "Initialising...")
     (let [state (atom 0)]
-      (globe/spawn! ctx "my-hero" my-hero nil nil)
+      (lekstuga/spawn! ctx "my-hero" my-hero nil nil)
 
       (fn [msg]
         (match msg
                {::msg/subj :greet ::msg/body who}
                (println (format "%s %s!" greeting who))
                {::msg/subj :wassup?}
-               (globe/reply! msg "WASSUP!!!")
+               (lekstuga/reply! msg "WASSUP!!!")
                {::msg/subj :throw}
                (throw (ex-info "Something went wrong!" {:reason :requested}))
                {::msg/subj :inc}
                (let [x (swap! state inc)]
-                 (info (globe/self ctx) "X:" x))
-               :else (globe/handle-message! ctx msg)))))
+                 (info (lekstuga/self ctx) "X:" x))
+               :else (lekstuga/handle-message! ctx msg)))))
 
-  (def system (globe/start-system!))
-  (def main-actor (globe/spawn! system "greeter" greeter "Hello" nil))
+  (def system (lekstuga/start-system!))
+  (def main-actor (lekstuga/spawn! system "greeter" greeter "Hello" nil))
 
-  (globe/tell! main-actor (globe/msg :greet "Andrey"))
-  (globe/tell! main-actor (globe/msg :inc))
+  (lekstuga/tell! main-actor (lekstuga/msg :greet "Andrey"))
+  (lekstuga/tell! main-actor (lekstuga/msg :inc))
   (go (println "reply:"
-               (<! (globe/<ask! main-actor (globe/msg :wassup?)))))
-  (globe/tell! main-actor (globe/msg :globe/poison-pill))
-  (globe/tell! main-actor (globe/msg :throw))
+               (<! (lekstuga/<ask! main-actor (lekstuga/msg :wassup?)))))
+  (lekstuga/tell! main-actor (lekstuga/msg :lekstuga/poison-pill))
+  (lekstuga/tell! main-actor (lekstuga/msg :throw))
 
   ;; helpers
 

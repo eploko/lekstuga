@@ -1,10 +1,10 @@
-(ns globe.actor-registry
+(ns lekstuga.actor-registry
   (:require
-   [globe.actors :as actors]
-   [globe.api :as api]
-   [globe.uris :as uris]
-   [globe.msg :as msg]
-   [globe.refs.bubble :as refs-bubble]))
+   [lekstuga.actors :as actors]
+   [lekstuga.api :as api]
+   [lekstuga.uris :as uris]
+   [lekstuga.msg :as msg]
+   [lekstuga.refs.bubble :as refs-bubble]))
 
 (defrecord LocalActorRegistry [root-path !init-data]
   api/ActorRegistry
@@ -21,7 +21,7 @@
   (spawn! [this actor-id actor-fn actor-props opts]
     (let [user-guardian (api/user-guardian this)
           user-guardian-cell (api/underlying user-guardian)]
-      (api/tell! user-guardian (msg/make-signal :globe/new-child))
+      (api/tell! user-guardian (msg/make-signal :lekstuga/new-child))
       (let [child-ref (api/spawn! user-guardian-cell actor-id actor-fn actor-props opts)]
         (api/link! child-ref user-guardian)
         (api/on-cleanup user-guardian-cell #(api/unlink! child-ref user-guardian))

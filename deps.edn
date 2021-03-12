@@ -18,8 +18,8 @@
                "-d" "test"]}
   :jar {:extra-deps {seancorfield/depstar {:mvn/version "1.1.133"}}
         :exec-fn hf.depstar/jar
-        :exec-args {:jar "globe.jar"}}
+        :exec-args {:jar "lekstuga.jar"}}
   :install {:extra-deps {slipset/deps-deploy {:mvn/version "0.1.1"}}
-            :main-opts ["-m" "deps-deploy.deps-deploy" "install" "globe.jar"]}
+            :main-opts ["-m" "deps-deploy.deps-deploy" "install" "lekstuga.jar"]}
   :deploy {:extra-deps {slipset/deps-deploy {:mvn/version "0.1.1"}}
-           :main-opts ["-m" "deps-deploy.deps-deploy" "deploy" "globe.jar"]}}}
+           :main-opts ["-m" "deps-deploy.deps-deploy" "deploy" "lekstuga.jar"]}}}

@@ -1,14 +1,14 @@
-(ns globe.cell
+(ns lekstuga.cell
   (:require
    [clojure.core.async :as async]
    [clojure.core.match :refer [match]]
    [cognitect.anomalies :as anom]
-   [globe.api :as api]
-   [globe.async :as gasync :refer [chan? err-or <?]]
-   [globe.context :as context]
-   [globe.logger :as logger]
-   [globe.msg :as msg]
-   [globe.uris :as uris]))
+   [lekstuga.api :as api]
+   [lekstuga.async :as gasync :refer [chan? err-or <?]]
+   [lekstuga.context :as context]
+   [lekstuga.logger :as logger]
+   [lekstuga.msg :as msg]
+   [lekstuga.uris :as uris]))
 
 (defn- tell-children!
   [cell msg & {:keys [on-no-children]
@@ -22,14 +22,14 @@
 (defn- tell-children-to-stop
   [cell]
   (logger/debug (api/self cell) "Telling all children to stop...")
-  (tell-children! cell (msg/make-signal :globe/poison-pill)
+  (tell-children! cell (msg/make-signal :lekstuga/poison-pill)
                   :on-no-children
                   #(api/tell! (api/self cell) (msg/make-signal ::children-stopped))))
 
 (defn- tell-children-to-restart
   [cell]
   (logger/debug (api/self cell) "Telling all children to restart...")
-  (tell-children! cell (msg/make-signal :globe/restart)))
+  (tell-children! cell (msg/make-signal :lekstuga/restart)))
 
 (defn- handle-poison-pill
   [cell]
@@ -44,7 +44,7 @@
   (api/suspend! cell)
   (api/switch-to-mode! cell ::awaiting-supervisor-decision)
   (api/tell! (api/supervisor cell)
-             (-> (msg/make-signal :globe/failure anomaly)
+             (-> (msg/make-signal :lekstuga/failure anomaly)
                  (msg/from (api/self cell)))))
 
 (defn- supervise-child
@@ -55,13 +55,13 @@
                  on-failure)]
     (logger/info (api/self cell) (format "Supervising decision for %s: %s" child-ref action))
     (case action
-      :globe/resume (api/tell! child-ref (-> (msg/make-signal :globe/resume)
+      :lekstuga/resume (api/tell! child-ref (-> (msg/make-signal :lekstuga/resume)
                                              (msg/from (api/self cell))))
-      :globe/restart (api/tell! child-ref (-> (msg/make-signal :globe/restart)
+      :lekstuga/restart (api/tell! child-ref (-> (msg/make-signal :lekstuga/restart)
                                               (msg/from (api/self cell))))
-      :globe/restart-all (tell-children-to-restart cell)
-      :globe/escalate (handle-anomaly cell nil anomaly)
-      :globe/stop (api/tell! child-ref (msg/make-signal :globe/poison-pill))
+      :lekstuga/restart-all (tell-children-to-restart cell)
+      :lekstuga/escalate (handle-anomaly cell nil anomaly)
+      :lekstuga/stop (api/tell! child-ref (msg/make-signal :lekstuga/poison-pill))
       (handle-anomaly
        cell nil
        {::anom/category ::anom/fault
@@ -102,7 +102,7 @@
   (spawn!
     [this actor-id actor-fn actor-props
      {:keys [on-failure]
-      :or {on-failure :globe/restart}}]
+      :or {on-failure :lekstuga/restart}}]
     (let [child-uri (uris/child-uri (api/uri @!self) actor-id)
           child-ref (api/local-actor-ref system child-uri actor-fn actor-props @!self nil)]
       (api/add-child! this child-ref on-failure)
@@ -132,20 +132,20 @@
   api/UnhandledMessageHandler
   (handle-unhandled-message! [this msg]
     (match [@!mode msg]
-           [::running {::msg/subj :globe/poison-pill}]
+           [::running {::msg/subj :lekstuga/poison-pill}]
            (handle-poison-pill this)
            [::running {::msg/subj ::children-stopped}]
            nil
            [::running
-            {::msg/subj :globe/failure ::msg/from child-ref ::msg/body anomaly}]
+            {::msg/subj :lekstuga/failure ::msg/from child-ref ::msg/body anomaly}]
            (supervise-child this child-ref anomaly)
-           [_ {::msg/subj :globe/child-terminated ::msg/from child-ref}]
+           [_ {::msg/subj :lekstuga/child-terminated ::msg/from child-ref}]
            (api/remove-child! this child-ref)
            [::awaiting-supervisor-decision
-            {::msg/subj :globe/resume ::msg/from supervisor}]
+            {::msg/subj :lekstuga/resume ::msg/from supervisor}]
            (handle-supervised-resume this)
            [::awaiting-supervisor-decision
-            {::msg/subj :globe/restart ::msg/from supervisor}]
+            {::msg/subj :lekstuga/restart ::msg/from supervisor}]
            (handle-supervised-restart this)
            [::stopping {::msg/subj ::children-stopped}]
            (api/stop! this)

@@ -1,10 +1,10 @@
-(ns globe.ask
+(ns lekstuga.ask
   (:require
    [clj-uuid :as uuid]
    [clojure.core.match :refer [match]]
-   [globe.api :as api]
-   [globe.logger :as logger]
-   [globe.msg :as msg]
+   [lekstuga.api :as api]
+   [lekstuga.logger :as logger]
+   [lekstuga.msg :as msg]
    [clojure.core.async :as async :refer [>! chan go]]))
 
 (defn ask-actor
@@ -18,7 +18,7 @@
            (do
              (go (>! reply-ch body)
                  (async/close! reply-ch))
-             (api/tell! (api/self ctx) (msg/make-msg :globe/poison-pill)))
+             (api/tell! (api/self ctx) (msg/make-msg :lekstuga/poison-pill)))
            :else (api/handle-message! ctx msg))))
 
 (defn <ask!
@@ -37,7 +37,7 @@
            (do
              (logger/error actor-ref "<ask! timed out:" (::msg/subj msg))
              (async/close! ch)
-             (api/tell! ask-actor-ref (msg/make-msg :globe/poison-pill))
+             (api/tell! ask-actor-ref (msg/make-msg :lekstuga/poison-pill))
              :timeout)
            v))))))
 

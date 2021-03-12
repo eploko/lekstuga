@@ -1,4 +1,4 @@
-# globe
+# lekstuga
 
 A poor man's actor library for Clojure and ClojureScript.
 
@@ -10,7 +10,7 @@ Run a REPL and connect to it in Emacs (`M-x cider-connect-clj` or `C-c M-c`):
 
 Invoke a library API function from the command-line:
 
-    $ clojure -X eploko.globe/foo :a 1 :b '"two"'
+    $ clojure -X eploko.lekstuga/foo :a 1 :b '"two"'
     {:a 1, :b "two"} "Hello, World!"
 
 Run the project's tests (they'll fail until you edit them):

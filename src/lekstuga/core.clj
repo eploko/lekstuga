@@ -1,9 +1,9 @@
-(ns globe.core
+(ns lekstuga.core
   (:require
-   [globe.actor-system :as system]
-   [globe.api :as api]
-   [globe.ask :as ask]
-   [globe.msg :as msg]))
+   [lekstuga.actor-system :as system]
+   [lekstuga.api :as api]
+   [lekstuga.ask :as ask]
+   [lekstuga.msg :as msg]))
 
 (def start-system! system/start!)
 (def stop-system! system/stop!)

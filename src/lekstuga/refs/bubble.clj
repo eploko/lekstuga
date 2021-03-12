@@ -1,6 +1,6 @@
-(ns globe.refs.bubble
+(ns lekstuga.refs.bubble
   (:require
-   [globe.api :as api]))
+   [lekstuga.api :as api]))
 
 (defrecord BubbleRef []
   api/MessageTarget

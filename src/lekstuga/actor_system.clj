@@ -1,16 +1,16 @@
-(ns globe.actor-system
+(ns lekstuga.actor-system
   (:require
    [clojure.string :as str]
    [cognitect.anomalies :as anom]
-   [globe.async :refer [<? go-safe]]
-   [globe.actor-registry :as registry]
-   [globe.api :as api]
-   [globe.api.transport :as transport-api]
-   [globe.dispatcher :as dispatcher]
-   [globe.mailbox :as mb]
-   [globe.refs :as refs]
-   [globe.transports.local :as local-transport]
-   [globe.uris :as uris]))
+   [lekstuga.async :refer [<? go-safe]]
+   [lekstuga.actor-registry :as registry]
+   [lekstuga.api :as api]
+   [lekstuga.api.transport :as transport-api]
+   [lekstuga.dispatcher :as dispatcher]
+   [lekstuga.mailbox :as mb]
+   [lekstuga.refs :as refs]
+   [lekstuga.transports.local :as local-transport]
+   [lekstuga.uris :as uris]))
 
 (defrecord ActorSystem [system-name actor-registry !transports]
   api/HasName
@@ -62,7 +62,7 @@
   (start! [this]
     (registry/init! actor-registry this)
     (api/register-transport!
-     this (local-transport/local-transport "globe" this))
+     this (local-transport/local-transport "lekstuga" this))
     this)
   (stop! [this]
     (doseq [transport (vals @!transports)]
@@ -88,8 +88,8 @@
 
 (comment
   (start!)
-  (filter #(str/starts-with? % "#'globe.actor-system/")
+  (filter #(str/starts-with? % "#'lekstuga.actor-system/")
           (map str
                (vals
-                (ns-map (find-ns 'globe.actor-system)))))
+                (ns-map (find-ns 'lekstuga.actor-system)))))
   ,)

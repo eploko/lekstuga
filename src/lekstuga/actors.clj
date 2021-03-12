@@ -1,9 +1,9 @@
-(ns globe.actors
+(ns lekstuga.actors
   (:require
    [clojure.core.match :refer [match]]
-   [globe.api :as api]
-   [globe.msg :as msg]
-   [globe.logger :as logger]))
+   [lekstuga.api :as api]
+   [lekstuga.msg :as msg]
+   [lekstuga.logger :as logger]))
 
 (defn temp-guardian
   [ctx _props]
@@ -18,11 +18,11 @@
 
     (fn [msg]
       (match msg
-             {::msg/subj :globe/new-child}
+             {::msg/subj :lekstuga/new-child}
              (swap! !children-count inc)
-             {::msg/subj :globe/terminated}
+             {::msg/subj :lekstuga/terminated}
              (when (zero? (swap! !children-count dec))
-               (api/tell! (api/self ctx) (msg/make-signal :globe/poison-pill)))
+               (api/tell! (api/self ctx) (msg/make-signal :lekstuga/poison-pill)))
              :else 
              (api/handle-message! ctx msg)))))
 
@@ -46,10 +46,10 @@
     
     (fn [msg]
       (match msg
-             {::msg/subj :globe/terminated ::msg/from user-guardian}
+             {::msg/subj :lekstuga/terminated ::msg/from user-guardian}
              (do
                (logger/info (api/self ctx) "The user guardian has terminated. Shutting down...")
-               (api/tell! (api/self ctx) (msg/make-signal :globe/poison-pill)))
+               (api/tell! (api/self ctx) (msg/make-signal :lekstuga/poison-pill)))
              :else 
              (api/handle-message! ctx msg)))))
 

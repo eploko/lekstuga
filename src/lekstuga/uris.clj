@@ -1,11 +1,11 @@
-(ns globe.uris
+(ns lekstuga.uris
   (:require
    [lambdaisland.uri :as luri]
    [clojure.string :as str]))
 
 (def uri luri/uri)
 
-(def prefix-uri (uri "globe://"))
+(def prefix-uri (uri "lekstuga://"))
 
 (defn system-uri
   [system-id]
@@ -59,13 +59,13 @@
   (:host (uri str-or-uri)))
 
 (comment
-  (scheme "globe://")
-  (into {} (uri "globe://"))
+  (scheme "lekstuga://")
+  (into {} (uri "lekstuga://"))
   (address "glo")
   (system-uri "aloha")
   (child? (luri/join (system-uri "aloha") "/" "user")
           (system-uri "aloha"))
-  (child-uri "globe://host/user" "next")
+  (child-uri "lekstuga://host/user" "next")
   (child-name (system-uri "aloha"))
   (child-name (system-uri "aloha")
               (luri/join (system-uri "aloha") "/user/whoa"))

@@ -1,8 +1,8 @@
-(ns globe.mailbox
+(ns lekstuga.mailbox
   (:require
-   [globe.api :as api]
-   [globe.async :as gasync]
-   [globe.msg :as msg]
+   [lekstuga.api :as api]
+   [lekstuga.async :as gasync]
+   [lekstuga.msg :as msg]
    [clojure.core.async :as async])
   (:import
    [clojure.lang IDeref]))

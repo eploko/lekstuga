@@ -1,10 +1,10 @@
-(ns globe.transports.simple
+(ns lekstuga.transports.simple
   (:require
    [cognitect.anomalies :as anom]
-   [globe.async :refer [go-safe]]
-   [globe.api :as api]
-   [globe.api.transport :as transport-api]
-   [globe.uris :as uris]))
+   [lekstuga.async :refer [go-safe]]
+   [lekstuga.api :as api]
+   [lekstuga.api.transport :as transport-api]
+   [lekstuga.uris :as uris]))
 
 (defrecord SimpleTransport [scheme system]
   transport-api/Transport

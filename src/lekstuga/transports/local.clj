@@ -1,10 +1,10 @@
-(ns globe.transports.local
+(ns lekstuga.transports.local
   (:require
    [cognitect.anomalies :as anom]
-   [globe.async :refer [go-safe]]
-   [globe.api :as api]
-   [globe.api.transport :as transport-api]
-   [globe.uris :as uris]))
+   [lekstuga.async :refer [go-safe]]
+   [lekstuga.api :as api]
+   [lekstuga.api.transport :as transport-api]
+   [lekstuga.uris :as uris]))
 
 (defonce !systems (atom {}))
 

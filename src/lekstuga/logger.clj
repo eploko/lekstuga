@@ -1,7 +1,7 @@
-(ns globe.logger
+(ns lekstuga.logger
   (:require
    [clojure.tools.logging :as log]
-   [globe.api :as api]))
+   [lekstuga.api :as api]))
 
 (defn actor-ref-message
   [actor-ref]

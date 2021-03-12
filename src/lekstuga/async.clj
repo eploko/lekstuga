@@ -1,4 +1,4 @@
-(ns globe.async
+(ns lekstuga.async
   "`core.async` additions."
   (:require [clojure.core.async :as async :refer [go go-loop]]
             [clojure.core.async.impl.protocols :as async-protocols]

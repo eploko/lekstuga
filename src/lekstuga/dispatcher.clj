@@ -1,6 +1,6 @@
-(ns globe.dispatcher
+(ns lekstuga.dispatcher
   (:require
-   [globe.api :as api]
+   [lekstuga.api :as api]
    [clojure.core.async :as async :refer [<! go-loop]]))
 
 (defrecord Dispatcher [!signal-ch]
