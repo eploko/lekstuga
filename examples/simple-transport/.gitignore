@@ -1,0 +1,12 @@
+/target
+/classes
+/checkouts
+*.jar
+*.class
+/.cpcache
+/.lein-*
+/.lsp
+/.nrepl-history
+/.nrepl-port
+.hgignore
+.hg/
