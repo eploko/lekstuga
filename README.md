@@ -1,3 +1,5 @@
+*NB!* This is a proof-of-concept library and is probably not suitable for your needs. 
+
 # lekstuga
 
 A poor man's actor library for Clojure and ClojureScript.
